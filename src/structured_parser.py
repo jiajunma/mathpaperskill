@@ -212,15 +212,25 @@ class Section:
     level: int = 1
     
     def to_latex(self) -> str:
+        """Reconstruct LaTeX, using raw_content for accuracy"""
         if self.raw_latex:
             return self.raw_latex
         
+        # Use raw_content if available (most accurate reconstruction)
+        if self.raw_content:
+            # Build result from raw_content plus subsections
+            result = self.raw_content
+            # Add subsections at the end
+            for subsec in self.subsections:
+                result += "\n\n" + subsec.to_latex()
+            return result
+        
+        # Fallback to building from components
         label_str = f"\\label{{{self.label}}}" if self.label else ""
         parts = [
             f"\\{self.type}{{{self.title}}}{label_str}",
         ]
         
-        # Add content
         for item in self.paragraphs + self.elements + self.subsections:
             if isinstance(item, Section):
                 parts.append(item.to_latex())
@@ -538,9 +548,8 @@ class StructuredParser:
             type=sec_type,
             title=self._clean_latex(title),
             label=label,
-            level=level,
             raw_content=content,
-            raw_latex=f"\\{sec_type}{{{title}}}{'\\\\label{' + label + '}' if label else ''}"
+            raw_latex=f"\\{sec_type}{{{title}}}"
         )
         
         # Parse theorems, definitions, etc.
@@ -550,7 +559,7 @@ class StructuredParser:
         section.paragraphs = self._parse_paragraphs(content)
         
         return section
-    
+
     def _parse_elements(self, content: str) -> List[Union[Theorem, Definition, Equation]]:
         """Parse mathematical elements from content, avoiding duplicates globally"""
         elements = []
@@ -572,22 +581,10 @@ class StructuredParser:
                 # Check if we've already seen this element (by content hash)
                 content_hash = hash(match.group(0))
                 if content_hash in self._seen_element_hashes:
-                    continue
-                self._seen_element_hashes.add(content_hash)
-                
-                if env_type in ["equation", "equation_star"]:
-                    eq_content = match.group(1).strip()
-                    label_match = re.search(r'\\label\{(.*?)\}', eq_content)
                     label = label_match.group(1) if label_match else None
                     
                     self.counters["equation"] += 1
                     eq = Equation(
-                        number=self.counters["equation"],
-                        label=label,
-            level=level,
-            raw_content=content,
-                        content=re.sub(r'\\label\{.*?\}', '', eq_content).strip(),
-                        is_numbered=(env_type == "equation"),
                         raw_latex=match.group(0)
                     )
                     elements.append(eq)
@@ -616,8 +613,6 @@ class StructuredParser:
                         type=env_type,
                         number=self.counters[env_type],
                         label=label,
-            level=level,
-            raw_content=content,
                         name=name,
                         content=self._parse_text_spans(body),
                         raw_latex=match.group(0)
