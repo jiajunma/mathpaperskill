@@ -439,6 +439,93 @@ class DependencyGraphVisualizer:
                     self.graph.nodes[node][key] = cleaned[:500]  # Limit length
         nx.write_graphml(self.graph, output_path)
         print(f"Graph exported to: {output_path}")
+    
+    def export_dot(self, output_path: str = "dependency_graph.dot"):
+        """Export graph to DOT format (Graphviz)"""
+        if len(self.graph.nodes()) == 0:
+            self.build_graph()
+        
+        type_colors = {
+            'definition': '#4CAF50',
+            'theorem': '#2196F3',
+            'lemma': '#FF9800',
+            'proposition': '#9C27B0',
+            'corollary': '#E91E63',
+            'assumption': '#F44336',
+            'remark': '#607D8B',
+        }
+        
+        lines = ['digraph MathDependencies {', '  rankdir=TB;']
+        lines.append('  node [shape=box, style=rounded, fontname="Arial"];')
+        
+        # Add nodes
+        for node in self.graph.nodes():
+            node_type = self.graph.nodes[node].get('type', 'unknown')
+            name = self.graph.nodes[node].get('name', node)
+            color = type_colors.get(node_type, '#999999')
+            # Escape special characters
+            safe_name = name.replace('"', '\\"').replace('\n', ' ')
+            safe_id = node.replace('"', '\\"')
+            lines.append(f'  "{safe_id}" [label="{safe_name}", fillcolor="{color}", style="filled,rounded"];')
+        
+        # Add edges
+        for edge in self.graph.edges():
+            source = edge[0].replace('"', '\\"')
+            target = edge[1].replace('"', '\\"')
+            lines.append(f'  "{source}" -> "{target}";')
+        
+        lines.append('}')
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+        print(f"DOT graph saved to: {output_path}")
+    
+    def export_mermaid(self, output_path: str = "dependency_graph.mmd"):
+        """Export graph to Mermaid format (for Markdown)"""
+        if len(self.graph.nodes()) == 0:
+            self.build_graph()
+        
+        type_colors = {
+            'definition': '#4CAF50',
+            'theorem': '#2196F3',
+            'lemma': '#FF9800',
+            'proposition': '#9C27B0',
+            'corollary': '#E91E63',
+            'assumption': '#F44336',
+            'remark': '#607D8B',
+        }
+        
+        lines = ['```mermaid', 'flowchart TD']
+        
+        # Add class definitions for colors
+        for entity_type, color in type_colors.items():
+            lines.append(f'    classDef {entity_type} fill:{color},stroke:#333,stroke-width:2px,color:#fff;')
+        
+        # Add nodes
+        for node in self.graph.nodes():
+            node_type = self.graph.nodes[node].get('type', 'unknown')
+            name = self.graph.nodes[node].get('name', node)
+            # Escape special characters for Mermaid
+            safe_name = name.replace('[', '&#91;').replace(']', '&#93;').replace('(', '&#40;').replace(')', '&#41;')
+            safe_id = node.replace('[', '_').replace(']', '_').replace('(', '_').replace(')', '_').replace(' ', '_')
+            safe_id = re.sub(r'[^a-zA-Z0-9_]', '_', safe_id)
+            lines.append(f'    {safe_id}["{safe_name}"]')
+            if node_type in type_colors:
+                lines.append(f'    class {safe_id} {node_type};')
+        
+        # Add edges
+        for edge in self.graph.edges():
+            source = edge[0].replace('[', '_').replace(']', '_').replace('(', '_').replace(')', '_').replace(' ', '_')
+            source = re.sub(r'[^a-zA-Z0-9_]', '_', source)
+            target = edge[1].replace('[', '_').replace(']', '_').replace('(', '_').replace(')', '_').replace(' ', '_')
+            target = re.sub(r'[^a-zA-Z0-9_]', '_', target)
+            lines.append(f'    {source} --> {target}')
+        
+        lines.append('```')
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+        print(f"Mermaid graph saved to: {output_path}")
 
 
 class MathPaperAnalyzer:
@@ -584,6 +671,14 @@ class MathPaperAnalyzer:
         # Export graph data
         graphml_path = os.path.join(output_dir, "dependency_graph.graphml")
         visualizer.export_graphml(graphml_path)
+        
+        # Export DOT format (Graphviz)
+        dot_path = os.path.join(output_dir, "dependency_graph.dot")
+        visualizer.export_dot(dot_path)
+        
+        # Export Mermaid format (for Markdown)
+        mermaid_path = os.path.join(output_dir, "dependency_graph.mmd")
+        visualizer.export_mermaid(mermaid_path)
 
 
 def main():
