@@ -109,6 +109,7 @@ class Definition(MathElement):
 @dataclass
 class Equation:
     """Numbered or unnumbered equation"""
+    type: str = "equation"  # Added type attribute
     number: Optional[int] = None
     label: Optional[str] = None
     content: str = ""  # LaTeX math content
