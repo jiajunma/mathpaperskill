@@ -440,6 +440,7 @@ class StructuredParser:
         self.counters = defaultdict(int)
         self.current_section: Optional[Section] = None
         self.section_stack: List[Section] = []
+        self._seen_element_hashes: set = set()  # Track seen elements globally
     
     def parse_file(self, tex_path: str) -> StructuredDocument:
         """Parse a LaTeX file into structured document"""
@@ -547,7 +548,7 @@ class StructuredParser:
         return section
     
     def _parse_elements(self, content: str) -> List[Union[Theorem, Definition, Equation]]:
-        """Parse mathematical elements from content"""
+        """Parse mathematical elements from content, avoiding duplicates globally"""
         elements = []
         
         # Patterns for different environments
@@ -564,6 +565,58 @@ class StructuredParser:
         
         for env_type, pattern in patterns:
             for match in re.finditer(pattern, content, re.DOTALL):
+                # Check if we've already seen this element (by content hash)
+                content_hash = hash(match.group(0))
+                if content_hash in self._seen_element_hashes:
+                    continue
+                self._seen_element_hashes.add(content_hash)
+                
+                if env_type in ["equation", "equation_star"]:
+                    eq_content = match.group(1).strip()
+                    label_match = re.search(r'\\label\{(.*?)\}', eq_content)
+                    label = label_match.group(1) if label_match else None
+                    
+                    self.counters["equation"] += 1
+                    eq = Equation(
+                        number=self.counters["equation"],
+                        label=label,
+                        content=re.sub(r'\\label\{.*?\}', '', eq_content).strip(),
+                        is_numbered=(env_type == "equation"),
+                        raw_latex=match.group(0)
+                    )
+                    elements.append(eq)
+                    self.doc.all_equations.append(eq)
+                else:
+                    name = match.group(1) if match.group(1) else ""
+                    body = match.group(2) if len(match.groups()) > 1 and match.group(2) else match.group(1)
+                    
+                    label_match = re.search(r'\\label\{(.*?)\}', body)
+                    label = label_match.group(1) if label_match else None
+                    
+                    self.counters[env_type] += 1
+                    
+                    # Extract proof if exists
+                    proof = None
+                    proof_match = re.search(r'\\begin\{proof\}(.*?)\\end\{proof\}', body, re.DOTALL)
+                    if proof_match:
+                        proof_content = proof_match.group(1)
+                        proof = Proof(
+                            content=self._parse_text_spans(proof_content),
+                            raw_latex=proof_match.group(0)
+                        )
+                        body = body[:proof_match.start()] + body[proof_match.end():]
+                    
+                    element = MathElement(
+                        type=env_type,
+                        number=self.counters[env_type],
+                        label=label,
+                        name=name,
+                        content=self._parse_text_spans(body),
+                        raw_latex=match.group(0)
+                    )
+                    elements.append(element)
+        
+        return elements
                 if env_type in ["equation", "equation_star"]:
                     eq_content = match.group(1).strip()
                     label_match = re.search(r'\\label\{(.*?)\}', eq_content)
