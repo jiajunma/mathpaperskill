@@ -1,0 +1,609 @@
+#!/usr/bin/env python3
+"""
+Math Paper Analyzer - Extract and analyze mathematical structures from papers.
+Supports PDF, LaTeX files, and arXiv links.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.request
+from pathlib import Path
+from dataclasses import dataclass, field, asdict
+from typing import List, Dict, Optional, Tuple
+from collections import defaultdict
+import networkx as nx
+import matplotlib.pyplot as plt
+
+
+@dataclass
+class MathEntity:
+    """Represents a mathematical entity (definition, theorem, lemma, etc.)"""
+    type: str  # definition, theorem, lemma, proposition, corollary, assumption, remark
+    name: str
+    label: Optional[str] = None
+    content: str = ""
+    section: str = ""
+    dependencies: List[str] = field(default_factory=list)
+    line_number: int = 0
+    cited_by: List[str] = field(default_factory=list)
+
+
+@dataclass
+class PaperStructure:
+    """Structure of a mathematical paper"""
+    title: str = ""
+    authors: List[str] = field(default_factory=list)
+    abstract: str = ""
+    sections: List[str] = field(default_factory=list)
+    entities: List[MathEntity] = field(default_factory=list)
+    definitions: Dict[str, MathEntity] = field(default_factory=dict)
+    theorems: Dict[str, MathEntity] = field(default_factory=dict)
+    lemmas: Dict[str, MathEntity] = field(default_factory=dict)
+    propositions: Dict[str, MathEntity] = field(default_factory=dict)
+    corollaries: Dict[str, MathEntity] = field(default_factory=dict)
+    assumptions: Dict[str, MathEntity] = field(default_factory=dict)
+    remarks: Dict[str, MathEntity] = field(default_factory=dict)
+
+
+class ArxivFetcher:
+    """Fetch papers from arXiv"""
+    
+    ARXIV_PDF_URL = "https://arxiv.org/pdf/{}.pdf"
+    ARXIV_SOURCE_URL = "https://arxiv.org/e-print/{}"
+    
+    @staticmethod
+    def extract_arxiv_id(url_or_id: str) -> str:
+        """Extract arXiv ID from URL or return as-is if already an ID"""
+        # Match patterns like 2512.19344v1 or arxiv.org/abs/2512.19344
+        patterns = [
+            r'arxiv\.org/abs/(\d+\.\d+(?:v\d+)?)',
+            r'arxiv\.org/pdf/(\d+\.\d+(?:v\d+)?)',
+            r'^(\d{4}\.\d+(?:v\d+)?)$',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, url_or_id)
+            if match:
+                return match.group(1)
+        return url_or_id
+    
+    @classmethod
+    def fetch_pdf(cls, arxiv_id: str, output_dir: str = ".") -> str:
+        """Download PDF from arXiv"""
+        arxiv_id = cls.extract_arxiv_id(arxiv_id)
+        pdf_url = cls.ARXIV_PDF_URL.format(arxiv_id)
+        output_path = os.path.join(output_dir, f"{arxiv_id}.pdf")
+        
+        print(f"Downloading from {pdf_url}...")
+        urllib.request.urlretrieve(pdf_url, output_path)
+        print(f"Saved to {output_path}")
+        return output_path
+    
+    @classmethod
+    def fetch_source(cls, arxiv_id: str, output_dir: str = ".") -> str:
+        """Download source tarball from arXiv"""
+        arxiv_id = cls.extract_arxiv_id(arxiv_id)
+        source_url = cls.ARXIV_SOURCE_URL.format(arxiv_id)
+        output_path = os.path.join(output_dir, f"{arxiv_id}_source.tar.gz")
+        
+        print(f"Downloading source from {source_url}...")
+        urllib.request.urlretrieve(source_url, output_path)
+        print(f"Saved to {output_path}")
+        return output_path
+
+
+class PDFExtractor:
+    """Extract text from PDF files"""
+    
+    @staticmethod
+    def extract_text(pdf_path: str) -> str:
+        """Extract text using pdftotext"""
+        result = subprocess.run(
+            ["pdftotext", "-layout", pdf_path, "-"],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"pdftotext failed: {result.stderr}")
+        return result.stdout
+    
+    @staticmethod
+    def extract_with_ocr(pdf_path: str) -> str:
+        """Extract text using OCR (for scanned PDFs)"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Extract images from PDF
+            subprocess.run(
+                ["pdfimages", "-png", pdf_path, os.path.join(tmpdir, "page")],
+                check=True
+            )
+            
+            # OCR each image
+            texts = []
+            images = sorted([f for f in os.listdir(tmpdir) if f.endswith('.png')])
+            for img in images:
+                img_path = os.path.join(tmpdir, img)
+                txt_path = os.path.join(tmpdir, img.replace('.png', ''))
+                subprocess.run(
+                    ["tesseract", img_path, txt_path, "-l", "eng"],
+                    check=True
+                )
+                with open(f"{txt_path}.txt", 'r') as f:
+                    texts.append(f.read())
+            
+            return "\n\n".join(texts)
+
+
+class LatexParser:
+    """Parse LaTeX files to extract mathematical structure"""
+    
+    # Environment patterns
+    ENV_PATTERNS = {
+        'definition': r'\\begin\{definition\}(?:\[(.*?)\])?(.*?)\\end\{definition\}',
+        'theorem': r'\\begin\{theorem\}(?:\[(.*?)\])?(.*?)\\end\{theorem\}',
+        'lemma': r'\\begin\{lemma\}(?:\[(.*?)\])?(.*?)\\end\{lemma\}',
+        'proposition': r'\\begin\{proposition\}(?:\[(.*?)\])?(.*?)\\end\{proposition\}',
+        'corollary': r'\\begin\{corollary\}(?:\[(.*?)\])?(.*?)\\end\{corollary\}',
+        'assumption': r'\\begin\{assumption\}(?:\[(.*?)\])?(.*?)\\end\{assumption\}',
+        'remark': r'\\begin\{remark\}(?:\[(.*?)\])?(.*?)\\end\{remark\}',
+    }
+    
+    LABEL_PATTERN = r'\\label\{(.*?)\}'
+    REF_PATTERN = r'\\(?:ref|eqref|cref)\{(.*?)\}'
+    
+    def __init__(self):
+        self.structure = PaperStructure()
+        self.entity_counter = defaultdict(int)
+    
+    def parse_file(self, tex_path: str) -> PaperStructure:
+        """Parse a LaTeX file"""
+        with open(tex_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        return self.parse_content(content)
+    
+    def parse_content(self, content: str) -> PaperStructure:
+        """Parse LaTeX content"""
+        # Extract basic info
+        self._extract_metadata(content)
+        self._extract_sections(content)
+        
+        # Extract entities
+        for entity_type, pattern in self.ENV_PATTERNS.items():
+            self._extract_entities(content, entity_type, pattern)
+        
+        # Build dependency graph
+        self._build_dependencies()
+        
+        return self.structure
+    
+    def _extract_metadata(self, content: str):
+        """Extract title, authors, abstract"""
+        # Title
+        title_match = re.search(r'\\title\{(.*?)\}', content, re.DOTALL)
+        if title_match:
+            self.structure.title = self._clean_latex(title_match.group(1))
+        
+        # Authors
+        author_matches = re.findall(r'\\author\{(.*?)\}', content, re.DOTALL)
+        self.structure.authors = [self._clean_latex(a) for a in author_matches]
+        
+        # Abstract
+        abstract_match = re.search(r'\\begin\{abstract\}(.*?)\\end\{abstract\}', content, re.DOTALL)
+        if abstract_match:
+            self.structure.abstract = self._clean_latex(abstract_match.group(1))
+    
+    def _extract_sections(self, content: str):
+        """Extract section titles"""
+        sections = re.findall(r'\\section\{(.*?)\}', content)
+        self.structure.sections = sections
+    
+    def _extract_entities(self, content: str, entity_type: str, pattern: str):
+        """Extract mathematical entities"""
+        matches = list(re.finditer(pattern, content, re.DOTALL))
+        
+        for i, match in enumerate(matches):
+            self.entity_counter[entity_type] += 1
+            
+            name = match.group(1) if match.group(1) else f"{entity_type.capitalize()} {self.entity_counter[entity_type]}"
+            entity_content = match.group(2) if len(match.groups()) > 1 else match.group(1)
+            
+            # Extract label
+            label_match = re.search(self.LABEL_PATTERN, match.group(0))
+            label = label_match.group(1) if label_match else None
+            
+            entity = MathEntity(
+                type=entity_type,
+                name=name,
+                label=label,
+                content=self._clean_latex(entity_content) if entity_content else "",
+                line_number=match.start()
+            )
+            
+            self.structure.entities.append(entity)
+            
+            # Store in appropriate category
+            category_map = {
+                'definition': self.structure.definitions,
+                'theorem': self.structure.theorems,
+                'lemma': self.structure.lemmas,
+                'proposition': self.structure.propositions,
+                'corollary': self.structure.corollaries,
+                'assumption': self.structure.assumptions,
+                'remark': self.structure.remarks,
+            }
+            
+            key = label if label else f"{entity_type}_{self.entity_counter[entity_type]}"
+            category_map[entity_type][key] = entity
+    
+    def _build_dependencies(self):
+        """Build dependency graph based on \ref citations"""
+        for entity in self.structure.entities:
+            # Find all \ref commands in the entity content
+            refs = re.findall(self.REF_PATTERN, entity.content)
+            entity.dependencies = refs
+            
+            # Update cited_by for referenced entities
+            for ref in refs:
+                for other in self.structure.entities:
+                    if other.label == ref:
+                        if entity.label not in other.cited_by:
+                            other.cited_by.append(entity.label)
+                        break
+    
+    def _clean_latex(self, text: str) -> str:
+        """Clean LaTeX formatting from text"""
+        # Remove comments
+        text = re.sub(r'(?<!\\)%.*$', '', text, flags=re.MULTILINE)
+        # Remove some common commands
+        text = re.sub(r'\\[a-zA-Z]+\*?(?:\[[^\]]*\])?(?:\{[^}]*\})?', ' ', text)
+        # Normalize whitespace
+        text = ' '.join(text.split())
+        return text.strip()
+
+
+class TextAnalyzer:
+    """Analyze plain text to identify mathematical structure"""
+    
+    # Keywords for identifying entities
+    KEYWORDS = {
+        'definition': [r'Definition\s+\d+', r'Definition\.'],
+        'theorem': [r'Theorem\s+\d+', r'Theorem\.'],
+        'lemma': [r'Lemma\s+\d+', r'Lemma\.'],
+        'proposition': [r'Proposition\s+\d+', r'Proposition\.'],
+        'corollary': [r'Corollary\s+\d+', r'Corollary\.'],
+        'assumption': [r'Assumption\s+\d+', r'Assumption\.', r'Assume\s+that'],
+        'remark': [r'Remark\s+\d+', r'Remark\.'],
+    }
+    
+    def __init__(self):
+        self.structure = PaperStructure()
+        self.entity_counter = defaultdict(int)
+    
+    def analyze(self, text: str) -> PaperStructure:
+        """Analyze text to extract mathematical structure"""
+        # Extract title (first line or sentence)
+        lines = text.split('\n')
+        self.structure.title = lines[0].strip() if lines else "Unknown"
+        
+        # Find entities
+        for entity_type, patterns in self.KEYWORDS.items():
+            self._find_entities(text, entity_type, patterns)
+        
+        # Build dependencies
+        self._build_dependencies()
+        
+        return self.structure
+    
+    def _find_entities(self, text: str, entity_type: str, patterns: List[str]):
+        """Find entities of a specific type"""
+        for pattern in patterns:
+            matches = list(re.finditer(pattern, text, re.IGNORECASE))
+            
+            for match in matches:
+                self.entity_counter[entity_type] += 1
+                start = match.end()
+                
+                # Extract content (next sentence or paragraph)
+                end_match = re.search(r'\n\s*\n|\.\s+[A-Z]', text[start:])
+                end = start + end_match.start() if end_match else min(start + 500, len(text))
+                content = text[start:end].strip()
+                
+                entity = MathEntity(
+                    type=entity_type,
+                    name=f"{entity_type.capitalize()} {self.entity_counter[entity_type]}",
+                    content=content,
+                    line_number=match.start()
+                )
+                
+                self.structure.entities.append(entity)
+                
+                category_map = {
+                    'definition': self.structure.definitions,
+                    'theorem': self.structure.theorems,
+                    'lemma': self.structure.lemmas,
+                    'proposition': self.structure.propositions,
+                    'corollary': self.structure.corollaries,
+                    'assumption': self.structure.assumptions,
+                    'remark': self.structure.remarks,
+                }
+                
+                key = f"{entity_type}_{self.entity_counter[entity_type]}"
+                category_map[entity_type][key] = entity
+    
+    def _build_dependencies(self):
+        """Build simple dependency graph based on text references"""
+        for entity in self.structure.entities:
+            # Look for references to other entities
+            for other in self.structure.entities:
+                if other == entity:
+                    continue
+                # Check if entity references other by name
+                if other.name.lower() in entity.content.lower():
+                    if other.label:
+                        entity.dependencies.append(other.label)
+
+
+class DependencyGraphVisualizer:
+    """Visualize dependency graph of mathematical entities"""
+    
+    def __init__(self, structure: PaperStructure):
+        self.structure = structure
+        self.graph = nx.DiGraph()
+    
+    def build_graph(self):
+        """Build NetworkX graph from structure"""
+        # Add nodes
+        for entity in self.structure.entities:
+            node_id = entity.label if entity.label else f"{entity.type}_{entity.name}"
+            self.graph.add_node(
+                node_id,
+                type=entity.type,
+                name=entity.name,
+                content=entity.content[:100] + "..." if len(entity.content) > 100 else entity.content
+            )
+        
+        # Add edges (dependencies)
+        for entity in self.structure.entities:
+            source = entity.label if entity.label else f"{entity.type}_{entity.name}"
+            for dep in entity.dependencies:
+                if dep in self.graph:
+                    self.graph.add_edge(source, dep)
+        
+        return self.graph
+    
+    def visualize(self, output_path: str = "dependency_graph.png"):
+        """Create visualization of dependency graph"""
+        if len(self.graph.nodes()) == 0:
+            self.build_graph()
+        
+        if len(self.graph.nodes()) == 0:
+            print("No entities to visualize")
+            return
+        
+        plt.figure(figsize=(14, 10))
+        
+        # Color nodes by type
+        type_colors = {
+            'definition': '#4CAF50',
+            'theorem': '#2196F3',
+            'lemma': '#FF9800',
+            'proposition': '#9C27B0',
+            'corollary': '#E91E63',
+            'assumption': '#F44336',
+            'remark': '#607D8B',
+        }
+        
+        node_colors = [
+            type_colors.get(self.graph.nodes[n].get('type', ''), '#999999')
+            for n in self.graph.nodes()
+        ]
+        
+        # Layout
+        pos = nx.spring_layout(self.graph, k=2, iterations=50)
+        
+        # Draw
+        nx.draw_networkx_nodes(self.graph, pos, node_color=node_colors, node_size=1500, alpha=0.9)
+        nx.draw_networkx_edges(self.graph, pos, edge_color='#666666', arrows=True, 
+                               arrowsize=20, arrowstyle='->', width=1.5, alpha=0.6)
+        
+        # Labels
+        labels = {n: self._truncate_label(self.graph.nodes[n].get('name', n))
+                  for n in self.graph.nodes()}
+        nx.draw_networkx_labels(self.graph, pos, labels, font_size=8, font_weight='bold')
+        
+        plt.title("Mathematical Dependencies", fontsize=16, fontweight='bold')
+        plt.axis('off')
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
+        print(f"Dependency graph saved to: {output_path}")
+    
+    def _truncate_label(self, label: str, max_len: int = 20) -> str:
+        """Truncate label for display"""
+        if len(label) <= max_len:
+            return label
+        return label[:max_len-3] + "..."
+    
+    def export_graphml(self, output_path: str = "dependency_graph.graphml"):
+        """Export graph to GraphML format"""
+        if len(self.graph.nodes()) == 0:
+            self.build_graph()
+        # Clean node attributes for XML compatibility
+        for node in self.graph.nodes():
+            for key, value in list(self.graph.nodes[node].items()):
+                if isinstance(value, str):
+                    # Remove control characters and NULL bytes
+                    cleaned = ''.join(char for char in value if ord(char) >= 32 or char in '\n\r\t')
+                    self.graph.nodes[node][key] = cleaned[:500]  # Limit length
+        nx.write_graphml(self.graph, output_path)
+        print(f"Graph exported to: {output_path}")
+
+
+class MathPaperAnalyzer:
+    """Main class for analyzing math papers"""
+    
+    def __init__(self):
+        self.latex_parser = LatexParser()
+        self.text_analyzer = TextAnalyzer()
+        self.pdf_extractor = PDFExtractor()
+    
+    def analyze(self, input_path: str, output_dir: str = ".") -> PaperStructure:
+        """
+        Analyze a math paper from various input formats.
+        
+        Args:
+            input_path: Path to PDF, .tex file, or arXiv ID/URL
+            output_dir: Directory for output files
+        """
+        input_path = input_path.strip()
+        
+        # Check if arXiv link/ID
+        if 'arxiv' in input_path.lower() or re.match(r'^\d{4}\.\d+', input_path):
+            print(f"Fetching from arXiv: {input_path}")
+            pdf_path = ArxivFetcher.fetch_pdf(input_path, output_dir)
+            return self.analyze_pdf(pdf_path, output_dir)
+        
+        # Check file extension
+        ext = Path(input_path).suffix.lower()
+        
+        if ext == '.tex':
+            return self.analyze_latex(input_path, output_dir)
+        elif ext == '.pdf':
+            return self.analyze_pdf(input_path, output_dir)
+        else:
+            raise ValueError(f"Unsupported file type: {ext}")
+    
+    def analyze_pdf(self, pdf_path: str, output_dir: str = ".") -> PaperStructure:
+        """Analyze PDF file"""
+        print(f"Extracting text from PDF: {pdf_path}")
+        
+        try:
+            text = self.pdf_extractor.extract_text(pdf_path)
+        except Exception as e:
+            print(f"Native extraction failed, trying OCR: {e}")
+            text = self.pdf_extractor.extract_with_ocr(pdf_path)
+        
+        # Check if text looks like LaTeX source
+        if '\\begin{document}' in text or '\\section{' in text:
+            print("Detected LaTeX source in PDF, parsing as LaTeX...")
+            structure = self.latex_parser.parse_content(text)
+        else:
+            print("Analyzing as plain text...")
+            structure = self.text_analyzer.analyze(text)
+        
+        return structure
+    
+    def analyze_latex(self, tex_path: str, output_dir: str = ".") -> PaperStructure:
+        """Analyze LaTeX file"""
+        print(f"Parsing LaTeX file: {tex_path}")
+        structure = self.latex_parser.parse_file(tex_path)
+        return structure
+    
+    def generate_report(self, structure: PaperStructure, output_dir: str = "."):
+        """Generate analysis report"""
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # JSON report
+        report_path = os.path.join(output_dir, "analysis_report.json")
+        with open(report_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                'title': structure.title,
+                'authors': structure.authors,
+                'abstract': structure.abstract,
+                'sections': structure.sections,
+                'statistics': {
+                    'definitions': len(structure.definitions),
+                    'theorems': len(structure.theorems),
+                    'lemmas': len(structure.lemmas),
+                    'propositions': len(structure.propositions),
+                    'corollaries': len(structure.corollaries),
+                    'assumptions': len(structure.assumptions),
+                    'remarks': len(structure.remarks),
+                    'total': len(structure.entities),
+                },
+                'entities': [
+                    {
+                        'type': e.type,
+                        'name': e.name,
+                        'label': e.label,
+                        'content': e.content[:500] + "..." if len(e.content) > 500 else e.content,
+                        'dependencies': e.dependencies,
+                        'cited_by': e.cited_by,
+                    }
+                    for e in structure.entities
+                ]
+            }, f, indent=2, ensure_ascii=False)
+        print(f"Report saved to: {report_path}")
+        
+        # Markdown report
+        md_path = os.path.join(output_dir, "analysis_report.md")
+        with open(md_path, 'w', encoding='utf-8') as f:
+            f.write(f"# {structure.title}\n\n")
+            
+            if structure.authors:
+                f.write(f"**Authors:** {', '.join(structure.authors)}\n\n")
+            
+            if structure.abstract:
+                f.write(f"## Abstract\n\n{structure.abstract}\n\n")
+            
+            f.write("## Statistics\n\n")
+            stats = {
+                'Definitions': len(structure.definitions),
+                'Theorems': len(structure.theorems),
+                'Lemmas': len(structure.lemmas),
+                'Propositions': len(structure.propositions),
+                'Corollaries': len(structure.corollaries),
+                'Assumptions': len(structure.assumptions),
+                'Remarks': len(structure.remarks),
+            }
+            for name, count in stats.items():
+                f.write(f"- **{name}:** {count}\n")
+            f.write(f"\n**Total entities:** {len(structure.entities)}\n\n")
+            
+            # Entity details
+            for entity_type in ['definition', 'theorem', 'lemma', 'proposition', 'corollary', 'assumption', 'remark']:
+                entities = [e for e in structure.entities if e.type == entity_type]
+                if entities:
+                    f.write(f"## {entity_type.capitalize()}s\n\n")
+                    for e in entities:
+                        f.write(f"### {e.name}\n")
+                        if e.label:
+                            f.write(f"*Label: `{e.label}`*\n")
+                        if e.dependencies:
+                            f.write(f"*Depends on: {', '.join(e.dependencies)}*\n")
+                        f.write(f"\n{e.content[:300]}...\n\n")
+        print(f"Markdown report saved to: {md_path}")
+        
+        # Dependency graph
+        visualizer = DependencyGraphVisualizer(structure)
+        graph_path = os.path.join(output_dir, "dependency_graph.png")
+        visualizer.visualize(graph_path)
+        
+        # Export graph data
+        graphml_path = os.path.join(output_dir, "dependency_graph.graphml")
+        visualizer.export_graphml(graphml_path)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Analyze mathematical papers")
+    parser.add_argument("input", help="PDF file, LaTeX file, or arXiv ID/URL")
+    parser.add_argument("-o", "--output", default="./output", help="Output directory")
+    parser.add_argument("--no-graph", action="store_true", help="Skip dependency graph generation")
+    
+    args = parser.parse_args()
+    
+    analyzer = MathPaperAnalyzer()
+    
+    try:
+        structure = analyzer.analyze(args.input, args.output)
+        analyzer.generate_report(structure, args.output)
+        print("\nAnalysis complete!")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
