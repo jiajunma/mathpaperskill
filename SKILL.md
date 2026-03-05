@@ -69,9 +69,31 @@ After analysis, the following files are generated in the output directory:
 - `analysis_report.json` - Complete structured data
 - `analysis_report.md` - Human-readable report
 - `dependency_graph.png` - Visual dependency graph (PNG image)
+- `dependency_graph.html` - **Interactive HTML graph** with D3.js (NEW!)
 - `dependency_graph.dot` - Graphviz DOT format (text-based graph description)
 - `dependency_graph.mmd` - Mermaid diagram format (for Markdown/GitHub)
 - `dependency_graph.graphml` - Graph data for Gephi/Cytoscape
+
+### Interactive HTML Graph Features
+
+The HTML graph (`dependency_graph.html`) includes:
+
+🎮 **交互功能：**
+- **拖拽节点** - 自由调整布局
+- **缩放/平移** - 鼠标滚轮缩放，拖拽画布平移
+- **悬停提示** - 显示节点详细信息
+- **高亮连接** - 鼠标悬停时高亮相关边
+- **搜索过滤** - 右上角搜索框快速定位节点
+- **动画控制** - 暂停/播放力导向动画
+- **重置视图** - 一键恢复初始状态
+
+🎨 **视觉效果：**
+- 深色渐变背景
+- 彩色节点（按类型区分）
+- 发光悬停效果
+- 流畅的动画过渡
+
+使用方法：直接在浏览器中打开 `dependency_graph.html`
 
 ### Using DOT Format
 

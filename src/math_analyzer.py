@@ -526,6 +526,377 @@ class DependencyGraphVisualizer:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(lines))
         print(f"Mermaid graph saved to: {output_path}")
+    
+    def export_html(self, output_path: str = "dependency_graph.html"):
+        """Export interactive HTML graph using D3.js"""
+        if len(self.graph.nodes()) == 0:
+            self.build_graph()
+        
+        type_colors = {
+            'definition': '#4CAF50',
+            'theorem': '#2196F3',
+            'lemma': '#FF9800',
+            'proposition': '#9C27B0',
+            'corollary': '#E91E63',
+            'assumption': '#F44336',
+            'remark': '#607D8B',
+        }
+        
+        # Build nodes and links for D3
+        nodes = []
+        for node in self.graph.nodes():
+            node_type = self.graph.nodes[node].get('type', 'unknown')
+            name = self.graph.nodes[node].get('name', node)
+            content = self.graph.nodes[node].get('content', '')
+            nodes.append({
+                'id': node,
+                'name': name,
+                'type': node_type,
+                'color': type_colors.get(node_type, '#999999'),
+                'content': content.replace('"', '\\"').replace('\n', ' ')
+            })
+        
+        links = []
+        for edge in self.graph.edges():
+            links.append({'source': edge[0], 'target': edge[1]})
+        
+        # HTML template with D3.js
+        html_content = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mathematical Dependencies - Interactive Graph</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #fff;
+        }}
+        .header {{
+            padding: 20px;
+            text-align: center;
+            background: rgba(0,0,0,0.3);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }}
+        .header h1 {{
+            font-size: 28px;
+            margin-bottom: 10px;
+        }}
+        .legend {{
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+            padding: 15px;
+            background: rgba(0,0,0,0.2);
+        }}
+        .legend-item {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }}
+        .legend-color {{
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.3);
+        }}
+        #graph {{
+            width: 100%;
+            height: calc(100vh - 180px);
+            position: relative;
+        }}
+        .tooltip {{
+            position: absolute;
+            padding: 12px;
+            background: rgba(0,0,0,0.9);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+            max-width: 300px;
+            font-size: 13px;
+            line-height: 1.5;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }}
+        .tooltip h4 {{
+            margin-bottom: 8px;
+            color: #4CAF50;
+            font-size: 14px;
+        }}
+        .controls {{
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            display: flex;
+            gap: 10px;
+        }}
+        .btn {{
+            padding: 10px 20px;
+            background: rgba(76, 175, 80, 0.8);
+            border: none;
+            border-radius: 25px;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }}
+        .btn:hover {{
+            background: rgba(76, 175, 80, 1);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(76, 175, 80, 0.4);
+        }}
+        svg {{
+            width: 100%;
+            height: 100%;
+        }}
+        .node circle {{
+            cursor: pointer;
+            stroke: #fff;
+            stroke-width: 2px;
+            transition: all 0.3s;
+        }}
+        .node circle:hover {{
+            stroke-width: 4px;
+            filter: drop-shadow(0 0 10px currentColor);
+        }}
+        .node text {{
+            font-size: 12px;
+            fill: #fff;
+            text-anchor: middle;
+            pointer-events: none;
+            text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+        }}
+        .link {{
+            stroke: rgba(255,255,255,0.4);
+            stroke-width: 1.5px;
+            marker-end: url(#arrowhead);
+        }}
+        .link.highlight {{
+            stroke: #4CAF50;
+            stroke-width: 2.5px;
+        }}
+        .node.highlight circle {{
+            stroke: #FFD700;
+            stroke-width: 4px;
+        }}
+        .search-box {{
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 10px 15px;
+            border-radius: 25px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(0,0,0,0.5);
+            color: white;
+            width: 250px;
+            font-size: 14px;
+        }}
+        .search-box::placeholder {{
+            color: rgba(255,255,255,0.5);
+        }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔬 Mathematical Dependencies</h1>
+        <p>Interactive Force-Directed Graph</p>
+    </div>
+    
+    <div class="legend">
+        <div class="legend-item"><div class="legend-color" style="background: #4CAF50;"></div>Definition</div>
+        <div class="legend-item"><div class="legend-color" style="background: #2196F3;"></div>Theorem</div>
+        <div class="legend-item"><div class="legend-color" style="background: #FF9800;"></div>Lemma</div>
+        <div class="legend-item"><div class="legend-color" style="background: #9C27B0;"></div>Proposition</div>
+        <div class="legend-item"><div class="legend-color" style="background: #E91E63;"></div>Corollary</div>
+        <div class="legend-item"><div class="legend-color" style="background: #F44336;"></div>Assumption</div>
+        <div class="legend-item"><div class="legend-color" style="background: #607D8B;"></div>Remark</div>
+    </div>
+    
+    <input type="text" class="search-box" placeholder="🔍 Search nodes..." id="searchBox">
+    
+    <div id="graph"></div>
+    <div class="tooltip" id="tooltip"></div>
+    
+    <div class="controls">
+        <button class="btn" onclick="resetZoom()">🔄 Reset View</button>
+        <button class="btn" onclick="toggleAnimation()">⏯️ Pause/Play</button>
+    </div>
+
+    <script>
+        const nodes = {json.dumps(nodes, ensure_ascii=False)};
+        const links = {json.dumps(links, ensure_ascii=False)};
+        
+        const width = document.getElementById('graph').clientWidth;
+        const height = document.getElementById('graph').clientHeight;
+        
+        const svg = d3.select("#graph")
+            .append("svg")
+            .attr("viewBox", [0, 0, width, height]);
+        
+        // Arrow marker
+        svg.append("defs").append("marker")
+            .attr("id", "arrowhead")
+            .attr("viewBox", "0 -5 10 10")
+            .attr("refX", 25)
+            .attr("refY", 0)
+            .attr("markerWidth", 8)
+            .attr("markerHeight", 8)
+            .attr("orient", "auto")
+            .append("path")
+            .attr("d", "M0,-5L10,0L0,5")
+            .attr("fill", "rgba(255,255,255,0.4)");
+        
+        // Zoom behavior
+        const g = svg.append("g");
+        const zoom = d3.zoom()
+            .scaleExtent([0.1, 4])
+            .on("zoom", (event) => g.attr("transform", event.transform));
+        svg.call(zoom);
+        
+        // Force simulation
+        let animationRunning = true;
+        const simulation = d3.forceSimulation(nodes)
+            .force("link", d3.forceLink(links).id(d => d.id).distance(100))
+            .force("charge", d3.forceManyBody().strength(-400))
+            .force("center", d3.forceCenter(width / 2, height / 2))
+            .force("collision", d3.forceCollide().radius(40));
+        
+        // Draw links
+        const link = g.append("g")
+            .selectAll("line")
+            .data(links)
+            .join("line")
+            .attr("class", "link");
+        
+        // Draw nodes
+        const node = g.append("g")
+            .selectAll("g")
+            .data(nodes)
+            .join("g")
+            .attr("class", "node")
+            .call(d3.drag()
+                .on("start", dragstarted)
+                .on("drag", dragged)
+                .on("end", dragended));
+        
+        // Node circles
+        node.append("circle")
+            .attr("r", 20)
+            .attr("fill", d => d.color);
+        
+        // Node labels
+        node.append("text")
+            .attr("dy", 35)
+            .text(d => d.name.length > 15 ? d.name.substring(0, 15) + "..." : d.name);
+        
+        // Tooltip
+        const tooltip = d3.select("#tooltip");
+        
+        node.on("mouseover", function(event, d) {{
+            tooltip.style("opacity", 1)
+                .html(`<h4>${{d.name}}</h4><p><strong>Type:</strong> ${{d.type}}</p><p>${{d.content}}</p>`)
+                .style("left", (event.pageX + 10) + "px")
+                .style("top", (event.pageY - 10) + "px");
+            
+            // Highlight connected links
+            link.classed("highlight", l => l.source.id === d.id || l.target.id === d.id);
+            node.classed("highlight", n => n.id === d.id || 
+                links.some(l => (l.source.id === d.id && l.target.id === n.id) || 
+                                (l.target.id === d.id && l.source.id === n.id)));
+        }})
+        .on("mouseout", function() {{
+            tooltip.style("opacity", 0);
+            link.classed("highlight", false);
+            node.classed("highlight", false);
+        }});
+        
+        // Update positions
+        simulation.on("tick", () => {{
+            link
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x)
+                .attr("y2", d => d.target.y);
+            
+            node
+                .attr("transform", d => `translate(${{d.x}},${{d.y}})`);
+        }});
+        
+        // Drag functions
+        function dragstarted(event, d) {{
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+        }}
+        
+        function dragged(event, d) {{
+            d.fx = event.x;
+            d.fy = event.y;
+        }}
+        
+        function dragended(event, d) {{
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+        }}
+        
+        // Controls
+        function resetZoom() {{
+            svg.transition().duration(750).call(zoom.transform, d3.zoomIdentity);
+            simulation.alpha(1).restart();
+        }}
+        
+        function toggleAnimation() {{
+            if (animationRunning) {{
+                simulation.stop();
+            }} else {{
+                simulation.restart();
+            }}
+            animationRunning = !animationRunning;
+        }}
+        
+        // Search functionality
+        document.getElementById('searchBox').addEventListener('input', function(e) {{
+            const term = e.target.value.toLowerCase();
+            if (term === '') {{
+                node.style('opacity', 1);
+                link.style('opacity', 1);
+                return;
+            }}
+            
+            const matched = nodes.filter(n => n.name.toLowerCase().includes(term));
+            const matchedIds = new Set(matched.map(n => n.id));
+            
+            node.style('opacity', d => matchedIds.has(d.id) ? 1 : 0.2);
+            link.style('opacity', d => 
+                matchedIds.has(d.source.id) && matchedIds.has(d.target.id) ? 1 : 0.1);
+        }});
+        
+        // Window resize
+        window.addEventListener('resize', () => {{
+            const newWidth = document.getElementById('graph').clientWidth;
+            const newHeight = document.getElementById('graph').clientHeight;
+            simulation.force("center", d3.forceCenter(newWidth / 2, newHeight / 2));
+            simulation.alpha(0.3).restart();
+        }});
+    </script>
+</body>
+</html>'''
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        print(f"Interactive HTML graph saved to: {output_path}")
 
 
 class MathPaperAnalyzer:
@@ -679,6 +1050,10 @@ class MathPaperAnalyzer:
         # Export Mermaid format (for Markdown)
         mermaid_path = os.path.join(output_dir, "dependency_graph.mmd")
         visualizer.export_mermaid(mermaid_path)
+        
+        # Export interactive HTML (D3.js)
+        html_path = os.path.join(output_dir, "dependency_graph.html")
+        visualizer.export_html(html_path)
 
 
 def main():
