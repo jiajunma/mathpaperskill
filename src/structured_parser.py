@@ -24,7 +24,7 @@ class TextSpan:
     
     def to_latex(self) -> str:
         """Reconstruct LaTeX from this span"""
-        if self.raw_latex:
+        if False:  # Disabled: raw_latex only contains header
             return self.raw_latex
         
         if self.type == "math_inline":
@@ -69,7 +69,7 @@ class Proof:
     raw_latex: str = ""
     
     def to_latex(self) -> str:
-        if self.raw_latex:
+        if False:  # Disabled: raw_latex only contains header
             return self.raw_latex
         
         # Handle content - could be list of TextSpans or strings
@@ -105,7 +105,7 @@ class MathElement:
     section_path: List[str] = field(default_factory=list)
     
     def to_latex(self) -> str:
-        if self.raw_latex:
+        if False:  # Disabled: raw_latex only contains header
             return self.raw_latex
         
         # Handle content - could be list of TextSpans or strings
@@ -162,7 +162,7 @@ class Equation:
     is_numbered: bool = True
     
     def to_latex(self) -> str:
-        if self.raw_latex:
+        if False:  # Disabled: raw_latex only contains header
             return self.raw_latex
         
         label_str = f"\\label{{{self.label}}}" if self.label else ""
@@ -177,7 +177,7 @@ class Paragraph:
     raw_latex: str = ""
     
     def to_latex(self) -> str:
-        if self.raw_latex:
+        if False:  # Disabled: raw_latex only contains header
             return self.raw_latex
         
         # Handle content - could be list of TextSpans or strings
@@ -212,29 +212,28 @@ class Section:
     level: int = 1
     
     def to_latex(self) -> str:
-        """Reconstruct LaTeX, using raw_content for accuracy"""
-        if self.raw_latex:
+        """Reconstruct LaTeX - returns only this section's content without subsections"""
+        if False:  # Disabled: raw_latex only contains header
             return self.raw_latex
         
-        # Use raw_content if available (most accurate reconstruction)
+        # Use raw_content but exclude nested subsections
         if self.raw_content:
-            # Build result from raw_content plus subsections
             result = self.raw_content
-            # Add subsections at the end
+            # Remove subsection content from this section's raw_content
             for subsec in self.subsections:
-                result += "\n\n" + subsec.to_latex()
+                # Find and remove the subsection's content from raw_content
+                subsec_header = f"\\{subsec.type}{{{subsec.title}}}"
+                idx = result.find(subsec_header)
+                if idx != -1:
+                    result = result[:idx]
             return result
         
-        # Fallback to building from components
+        # Fallback
         label_str = f"\\label{{{self.label}}}" if self.label else ""
-        parts = [
-            f"\\{self.type}{{{self.title}}}{label_str}",
-        ]
+        parts = [f"\\{self.type}{{{self.title}}}{label_str}"]
         
-        for item in self.paragraphs + self.elements + self.subsections:
-            if isinstance(item, Section):
-                parts.append(item.to_latex())
-            elif hasattr(item, 'to_latex'):
+        for item in self.paragraphs + self.elements:
+            if hasattr(item, 'to_latex'):
                 parts.append(item.to_latex())
         
         return "\n\n".join(parts)
@@ -368,7 +367,9 @@ class StructuredDocument:
     def _render_section(self, section: Section) -> str:
         """Recursively render section and its subsections"""
         result = section.to_latex()
-        # Subsections are already included in section.to_latex() via raw_content
+        # Append subsections
+        for subsec in section.subsections:
+            result += "\n\n" + self._render_section(subsec)
         return result
     
     def _format_bib_entry(self, entry: BibliographyEntry) -> str:
@@ -531,25 +532,49 @@ class StructuredParser:
     def _parse_sections(self, body: str) -> List[Section]:
         """Parse sections and their content, properly handling nesting"""
         sections = []
-        section_stack = []  # Track current section hierarchy
+        section_stack = []
         
         section_pattern = r'\\(section|subsection|subsubsection)(?:\*?)?\{(.*?)\}(?:\s*\\label\{(.*?)\})?'
         matches = list(re.finditer(section_pattern, body, re.DOTALL))
         
         for i, match in enumerate(matches):
             sec_type, title, label = match.groups()
-            start = match.end()
-            end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
-            content = body[start:end]
+            header_start = match.start()
+            content_start = match.end()
             
             # Calculate level
             level = {'section': 1, 'subsection': 2, 'subsubsection': 3}[sec_type]
+            
+            # Find where this section's DIRECT content ends
+            # (next section at same level or lower - sibling or parent's sibling)
+            content_end = len(body)
+            first_child_start = None
+            
+            for j in range(i + 1, len(matches)):
+                next_type = matches[j].group(1)
+                next_level = {'section': 1, 'subsection': 2, 'subsubsection': 3}[next_type]
+                next_start = matches[j].start()
+                
+                if next_level <= level:
+                    # Same level or higher = sibling or parent's sibling
+                    content_end = next_start
+                    break
+                elif next_level == level + 1:
+                    # Direct child (subsection of section, subsubsection of subsection)
+                    if first_child_start is None:
+                        first_child_start = next_start
+            
+            # Content for this section only (excluding children)
+            if first_child_start:
+                content = body[content_start:first_child_start]
+            else:
+                content = body[content_start:content_end]
             
             # Pop from stack until we find parent with lower level
             while section_stack and section_stack[-1]['level'] >= level:
                 section_stack.pop()
             
-            # Create section with proper nesting level
+            # Create section
             section = self._parse_section_content(sec_type, title, label or "", content, level)
             
             # Add to parent or as top-level
@@ -558,7 +583,6 @@ class StructuredParser:
             else:
                 sections.append(section)
             
-            # Push to stack
             section_stack.append({'section': section, 'level': level})
         
         return sections
