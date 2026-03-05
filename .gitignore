@@ -28,3 +28,6 @@ output/
 
 # Test papers (large files)
 test_papers/*.pdf
+
+# Test results (do not push)
+test/
