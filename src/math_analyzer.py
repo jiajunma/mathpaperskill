@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+import urllib.error
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Tuple
@@ -1406,6 +1407,213 @@ class GraphQualityEvaluator:
         print("\n" + "="*60)
 
 
+class LLMReviewer:
+    """Use LLM (Kimi/Gemini) to generate peer review comments for math papers"""
+    
+    def __init__(self, kimi_key: Optional[str] = None, gemini_key: Optional[str] = None):
+        self.kimi_key = kimi_key
+        self.gemini_key = gemini_key
+        self.preferred_model = "kimi"  # Default to cheaper model
+    
+    def _call_kimi(self, prompt: str, max_tokens: int = 4000) -> str:
+        """Call Kimi API (Moonshot AI)"""
+        if not self.kimi_key:
+            raise ValueError("Kimi API key not provided")
+        
+        url = "https://api.moonshot.cn/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.kimi_key}"
+        }
+        data = {
+            "model": "kimi-latest",
+            "messages": [
+                {"role": "system", "content": "You are an expert mathematician and peer reviewer. Provide detailed, constructive feedback on mathematical papers."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.3,
+            "max_tokens": max_tokens
+        }
+        
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(data).encode('utf-8'),
+                headers=headers,
+                method='POST'
+            )
+            with urllib.request.urlopen(req, timeout=120) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                return result['choices'][0]['message']['content']
+        except Exception as e:
+            print(f"Kimi API error: {e}")
+            raise
+    
+    def _call_gemini(self, prompt: str, max_tokens: int = 4000) -> str:
+        """Call Gemini API (Google)"""
+        if not self.gemini_key:
+            raise ValueError("Gemini API key not provided")
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={self.gemini_key}"
+        headers = {"Content-Type": "application/json"}
+        data = {
+            "contents": [{
+                "parts": [{"text": prompt}]
+            }],
+            "generationConfig": {
+                "temperature": 0.3,
+                "maxOutputTokens": max_tokens
+            }
+        }
+        
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(data).encode('utf-8'),
+                headers=headers,
+                method='POST'
+            )
+            with urllib.request.urlopen(req, timeout=120) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                return result['candidates'][0]['content']['parts'][0]['text']
+        except Exception as e:
+            print(f"Gemini API error: {e}")
+            raise
+    
+    def _call_llm(self, prompt: str, max_tokens: int = 4000, model: Optional[str] = None) -> str:
+        """Call LLM with fallback strategy"""
+        use_model = model or self.preferred_model
+        
+        if use_model == "kimi" and self.kimi_key:
+            try:
+                return self._call_kimi(prompt, max_tokens)
+            except Exception as e:
+                print(f"Kimi failed, trying Gemini: {e}")
+                if self.gemini_key:
+                    return self._call_gemini(prompt, max_tokens)
+                raise
+        elif use_model == "gemini" and self.gemini_key:
+            try:
+                return self._call_gemini(prompt, max_tokens)
+            except Exception as e:
+                print(f"Gemini failed, trying Kimi: {e}")
+                if self.kimi_key:
+                    return self._call_kimi(prompt, max_tokens)
+                raise
+        else:
+            raise ValueError(f"No API key available for model: {use_model}")
+    
+    def generate_review(self, structure: PaperStructure, full_text: str = "") -> Dict:
+        """
+        Generate comprehensive peer review in Chinese.
+        Returns structured review data.
+        """
+        print("\n🤖 Generating AI peer review (this may take a minute)...")
+        
+        # Prepare paper summary for the prompt - limit entities
+        entities_summary = []
+        for e in structure.entities[:10]:  # Limit to first 10 entities
+            entities_summary.append(f"{e.type.upper()}: {e.name}")
+        
+        prompt = f"""你是一位资深的数学论文审稿人。请对以下数学论文进行详细的同行评议。审稿意见必须用中文撰写。
+
+论文信息：
+- 标题：{structure.title or '未提取到标题'}
+- 作者：{', '.join(structure.authors) if structure.authors else '未知'}
+- 摘要：{structure.abstract[:300] if structure.abstract else '未提取到摘要'}...
+
+提取到的主要数学实体：
+{chr(10).join(entities_summary)}
+
+论文统计：
+- 定义数量：{len(structure.definitions)}
+- 定理数量：{len(structure.theorems)}
+- 引理数量：{len(structure.lemmas)}
+- 命题数量：{len(structure.propositions)}
+- 推论数量：{len(structure.corollaries)}
+
+请按照以下结构提供详细的审稿意见：
+
+## 1. 论文概述与主要贡献
+简述文章的主要研究内容和核心定理，评价论文的创新点和学术价值。
+
+## 2. 主要证明方法分析
+分析论文使用的主要数学技巧和方法，评价证明思路的清晰度和巧妙性。
+
+## 3. 具体错误与问题
+### 3.1 语法和表述错误
+数学符号使用不当、语言表达不清晰之处。
+
+### 3.2 逻辑错误与漏洞
+论证过程中的逻辑断层、隐含假设未明确说明的地方。
+
+### 3.3 证明中的跳步
+需要补充详细论证的步骤、过于简略的证明片段。
+
+## 4. 引用与文献问题
+引用他人结论时表述含糊之处、重要参考文献的缺失。
+
+## 5. 改进建议
+结构组织、内容补充、写作风格方面的建议。
+
+请确保审稿意见具体且有针对性，避免空泛的评价。语气专业、客观、建设性。
+"""
+        
+        # First call with cheaper model (Kimi)
+        try:
+            review_text = self._call_llm(prompt, max_tokens=4000, model="kimi")
+        except Exception as e:
+            print(f"Kimi review failed: {e}")
+            review_text = "审稿生成失败。请检查API密钥配置。"
+        
+        # Parse the review into structured format
+        return self._parse_review(review_text)
+    
+    def _parse_review(self, review_text: str) -> Dict:
+        """Parse LLM output into structured review format"""
+        review = {
+            'raw_text': review_text,
+            'sections': {}
+        }
+        
+        # Try to extract sections
+        sections_patterns = [
+            ("overview", r"## 1[.\s]+论文概述与主要贡献(.*?)## 2"),
+            ("methods", r"## 2[.\s]+主要证明方法分析(.*?)## 3"),
+            ("errors", r"## 3[.\s]+具体错误与问题(.*?)## 4"),
+            ("citations", r"## 4[.\s]+引用与文献问题(.*?)## 5"),
+            ("suggestions", r"## 5[.\s]+改进建议(.*?)$"),
+        ]
+        
+        for section_name, pattern in sections_patterns:
+            match = re.search(pattern, review_text, re.DOTALL)
+            if match:
+                review['sections'][section_name] = match.group(1).strip()
+        
+        return review
+    
+    def export_review(self, review: Dict, output_path: str = "peer_review.md"):
+        """Export peer review to Markdown file"""
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write("# 数学论文同行评议报告\n\n")
+            f.write(review['raw_text'])
+        print(f"Peer review saved to: {output_path}")
+    
+    def print_review_summary(self, review: Dict):
+        """Print review summary to console"""
+        print("\n" + "="*60)
+        print("📝 AI PEER REVIEW (中文)")
+        print("="*60)
+        
+        # Print first 1000 chars as preview
+        preview = review['raw_text'][:1000]
+        print(preview)
+        if len(review['raw_text']) > 1000:
+            print(f"\n... (完整报告已保存，共 {len(review['raw_text'])} 字符)")
+        
+        print("\n" + "="*60)
+
+
 class MathPaperAnalyzer:
     """Main class for analyzing math papers"""
     
@@ -1567,6 +1775,47 @@ class MathPaperAnalyzer:
         quality_path = os.path.join(output_dir, "quality_report.json")
         evaluator.export_quality_report(quality_path)
         evaluator.print_quality_summary()
+        
+        # AI Peer Review (if API keys available)
+        try:
+            # Try to load API keys from common locations
+            kimi_key = None
+            gemini_key = None
+            
+            # Check common key file locations
+            key_paths = [
+                os.path.expanduser("~/.openclaw/workspace/mycode/kimi_key"),
+                os.path.expanduser("~/mycode/kimi_key"),
+                "./kimi_key",
+            ]
+            for path in key_paths:
+                if os.path.exists(path):
+                    with open(path, 'r') as f:
+                        kimi_key = f.read().strip()
+                    break
+            
+            gemini_paths = [
+                os.path.expanduser("~/.openclaw/workspace/mycode/gemini_key"),
+                os.path.expanduser("~/mycode/gemini_key"),
+                "./gemini_key",
+            ]
+            for path in gemini_paths:
+                if os.path.exists(path):
+                    with open(path, 'r') as f:
+                        gemini_key = f.read().strip()
+                    break
+            
+            if kimi_key or gemini_key:
+                reviewer = LLMReviewer(kimi_key=kimi_key, gemini_key=gemini_key)
+                review = reviewer.generate_review(structure)
+                review_path = os.path.join(output_dir, "peer_review.md")
+                reviewer.export_review(review, review_path)
+                reviewer.print_review_summary(review)
+            else:
+                print("\n⚠️  No API keys found. Skipping AI peer review.")
+                print("   Set KIMI_KEY or GEMINI_KEY environment variables, or create key files.")
+        except Exception as e:
+            print(f"\n⚠️  AI peer review failed: {e}")
 
 
 def main():
