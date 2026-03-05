@@ -69,65 +69,74 @@ After analysis, the following files are generated in the output directory:
 - `analysis_report.json` - Complete structured data
 - `analysis_report.md` - Human-readable report
 - `dependency_graph.png` - Visual dependency graph (PNG image)
-- `dependency_graph.html` - **Interactive HTML graph** with D3.js (NEW!)
-- `dependency_graph.dot` - Graphviz DOT format (text-based graph description)
-- `dependency_graph.mmd` - Mermaid diagram format (for Markdown/GitHub)
+- `dependency_graph.html` - **Interactive HTML graph** with D3.js
+- `dependency_graph.dot` - Graphviz DOT format
+- `dependency_graph.mmd` - Mermaid diagram format
 - `dependency_graph.graphml` - Graph data for Gephi/Cytoscape
+- **`quality_report.json`** - **Quality evaluation metrics** (NEW!)
+
+## Quality Evaluation
+
+The tool automatically evaluates dependency graph quality across 5 dimensions:
+
+### Metrics
+
+| Metric | Weight | Description | Ideal Range |
+|--------|--------|-------------|-------------|
+| **Coverage** | 25% | Number of entities detected | 10-50 entities |
+| **Connectivity** | 25% | % of nodes with edges | 50-90% |
+| **Structure Balance** | 20% | Ratio of definitions to theorems | 1:1 to 1:3 |
+| **Completeness** | 20% | Isolated node percentage | <20% |
+| **Density** | 10% | Edge density | 0.05-0.3 |
+
+### Quality Grades
+
+- **A (≥0.9)** - Excellent quality
+- **B (0.8-0.89)** - Good quality
+- **C (0.7-0.79)** - Fair quality
+- **D (0.6-0.69)** - Poor quality
+- **F (<0.6)** - Critical issues
+
+### Recommendations
+
+The quality report provides actionable recommendations:
+- 📄 Use LaTeX source for better entity extraction
+- 🔗 Check \label and \ref parsing
+- 📐 Verify definitions and theorems are detected
+- 🔍 Review for missed dependencies
+
+### Example Quality Output
+
+```
+🎯 OVERALL SCORE: 0.85/1.0 (Grade: B)
+
+Coverage          [██████████] 1.00 - 53 entities detected
+Connectivity      [██████░░░░] 0.60 - 65% of entities connected
+Structure Balance [████████░░] 0.80 - Good theorem/definition ratio
+Completeness      [████████░░] 0.85 - 15% isolated nodes
+Density           [████████░░] 0.80 - Density in ideal range
+```
 
 ### Interactive HTML Graph Features
 
 The HTML graph (`dependency_graph.html`) includes:
 
-🎮 **交互功能：**
-- **拖拽节点** - 自由调整布局
-- **缩放/平移** - 鼠标滚轮缩放，拖拽画布平移
-- **悬停提示** - 显示节点详细信息
-- **高亮连接** - 鼠标悬停时高亮相关边
-- **搜索过滤** - 右上角搜索框快速定位节点
-- **动画控制** - 暂停/播放力导向动画
-- **重置视图** - 一键恢复初始状态
+🎮 **Interactive Features:**
+- **Drag nodes** - Adjust layout freely
+- **Zoom/Pan** - Mouse wheel zoom, drag canvas
+- **Hover tooltips** - Show node details
+- **Highlight connections** - Hover to highlight related edges
+- **Search filter** - Top-right search box
+- **Animation controls** - Pause/play force-directed animation
+- **Reset view** - One-click restore
 
-🎨 **视觉效果：**
-- 深色渐变背景
-- 彩色节点（按类型区分）
-- 发光悬停效果
-- 流畅的动画过渡
+🎨 **Visual Effects:**
+- Dark gradient background
+- Color-coded nodes by type
+- Glowing hover effects
+- Smooth animations
 
-使用方法：直接在浏览器中打开 `dependency_graph.html`
-
-### Using DOT Format
-
-The DOT file can be converted to various formats using Graphviz:
-
-```bash
-# Convert to PDF
-dot -Tpdf dependency_graph.dot -o graph.pdf
-
-# Convert to SVG
-dot -Tsvg dependency_graph.dot -o graph.svg
-
-# Convert to PNG
-dot -Tpng dependency_graph.dot -o graph.png
-```
-
-### Using Mermaid Format
-
-The Mermaid file (`.mmd`) can be:
-- Embedded directly in Markdown documents (GitHub/GitLab render it)
-- Viewed with the Mermaid Live Editor: https://mermaid.live
-- Used in documentation tools like Notion, Obsidian, etc.
-
-Example:
-```markdown
-![Dependency Graph](dependency_graph.mmd)
-```
-
-Or inline in Markdown:
-````markdown
-```mermaid
-[copy content from .mmd file]
-```
-````
+Usage: Open `dependency_graph.html` in any browser
 
 ## Dependencies
 

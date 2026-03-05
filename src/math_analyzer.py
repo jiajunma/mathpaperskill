@@ -899,6 +899,513 @@ class DependencyGraphVisualizer:
         print(f"Interactive HTML graph saved to: {output_path}")
 
 
+class GraphQualityEvaluator:
+    """Evaluate the quality of dependency graphs extracted from math papers"""
+    
+    def __init__(self, structure: PaperStructure):
+        self.structure = structure
+        self.graph = nx.DiGraph()
+        self._build_graph()
+    
+    def _build_graph(self):
+        """Build NetworkX graph from structure"""
+        for entity in self.structure.entities:
+            node_id = entity.label if entity.label else f"{entity.type}_{entity.name}"
+            self.graph.add_node(
+                node_id,
+                type=entity.type,
+                name=entity.name
+            )
+        
+        for entity in self.structure.entities:
+            source = entity.label if entity.label else f"{entity.type}_{entity.name}"
+            for dep in entity.dependencies:
+                if dep in self.graph:
+                    self.graph.add_edge(source, dep)
+    
+    def evaluate(self) -> Dict:
+        """
+        Perform comprehensive quality evaluation.
+        Returns a dictionary with scores and recommendations.
+        """
+        metrics = {
+            'coverage': self._evaluate_coverage(),
+            'connectivity': self._evaluate_connectivity(),
+            'structure_balance': self._evaluate_structure_balance(),
+            'completeness': self._evaluate_completeness(),
+            'density': self._evaluate_density(),
+        }
+        
+        # Calculate overall score (weighted average)
+        weights = {
+            'coverage': 0.25,
+            'connectivity': 0.25,
+            'structure_balance': 0.20,
+            'completeness': 0.20,
+            'density': 0.10,
+        }
+        
+        overall_score = sum(
+            metrics[metric]['score'] * weights[metric]
+            for metric in metrics
+        )
+        
+        # Generate recommendations
+        recommendations = self._generate_recommendations(metrics)
+        
+        return {
+            'overall_score': round(overall_score, 2),
+            'grade': self._score_to_grade(overall_score),
+            'metrics': metrics,
+            'recommendations': recommendations,
+            'statistics': {
+                'total_nodes': self.graph.number_of_nodes(),
+                'total_edges': self.graph.number_of_edges(),
+                'density': round(nx.density(self.graph), 4),
+                'is_connected': nx.is_weakly_connected(self.graph) if self.graph.number_of_nodes() > 0 else False,
+                'num_components': nx.number_weakly_connected_components(self.graph) if self.graph.number_of_nodes() > 0 else 0,
+            }
+        }
+    
+    def _evaluate_coverage(self) -> Dict:
+        """
+        Evaluate entity coverage - whether we've detected a reasonable number of entities.
+        Score based on expected density of math entities in academic papers.
+        """
+        total_entities = len(self.structure.entities)
+        
+        # Heuristic: typical math papers have 5-15 major entities per 1000 words
+        # We'll be lenient and consider 3-20 as acceptable range
+        
+        if total_entities == 0:
+            return {
+                'score': 0.0,
+                'status': 'CRITICAL',
+                'message': 'No entities detected. Check if input is a valid math paper.',
+                'details': {'total_entities': 0}
+            }
+        
+        if total_entities < 3:
+            return {
+                'score': 0.3,
+                'status': 'POOR',
+                'message': f'Only {total_entities} entities detected. May have missed content.',
+                'details': {'total_entities': total_entities}
+            }
+        
+        if total_entities < 10:
+            return {
+                'score': 0.6,
+                'status': 'FAIR',
+                'message': f'{total_entities} entities detected. Consider checking for missed entities.',
+                'details': {'total_entities': total_entities}
+            }
+        
+        if total_entities <= 50:
+            return {
+                'score': 0.9,
+                'status': 'GOOD',
+                'message': f'{total_entities} entities detected. Good coverage.',
+                'details': {'total_entities': total_entities}
+            }
+        
+        return {
+            'score': 1.0,
+            'status': 'EXCELLENT',
+            'message': f'{total_entities} entities detected. Comprehensive coverage.',
+            'details': {'total_entities': total_entities}
+        }
+    
+    def _evaluate_connectivity(self) -> Dict:
+        """
+        Evaluate the connectivity of the dependency graph.
+        Good graphs should have meaningful connections between entities.
+        """
+        if self.graph.number_of_nodes() == 0:
+            return {
+                'score': 0.0,
+                'status': 'CRITICAL',
+                'message': 'Empty graph - no connectivity to evaluate.',
+                'details': {}
+            }
+        
+        # Calculate percentage of nodes with at least one connection
+        nodes_with_edges = sum(
+            1 for node in self.graph.nodes()
+            if self.graph.degree(node) > 0
+        )
+        
+        connected_ratio = nodes_with_edges / self.graph.number_of_nodes()
+        
+        # Ideal: 70-90% of nodes should have connections
+        # Too few connections = isolated entities
+        # Too many connections = may indicate over-linking or false positives
+        
+        if connected_ratio < 0.3:
+            return {
+                'score': 0.3,
+                'status': 'POOR',
+                'message': f'Only {connected_ratio:.1%} of entities have dependencies. Many isolated nodes.',
+                'details': {
+                    'connected_nodes': nodes_with_edges,
+                    'total_nodes': self.graph.number_of_nodes(),
+                    'connected_ratio': connected_ratio
+                }
+            }
+        
+        if connected_ratio < 0.5:
+            return {
+                'score': 0.6,
+                'status': 'FAIR',
+                'message': f'{connected_ratio:.1%} of entities connected. Consider adding more cross-references.',
+                'details': {
+                    'connected_nodes': nodes_with_edges,
+                    'total_nodes': self.graph.number_of_nodes(),
+                    'connected_ratio': connected_ratio
+                }
+            }
+        
+        if connected_ratio <= 0.9:
+            return {
+                'score': 0.9,
+                'status': 'GOOD',
+                'message': f'{connected_ratio:.1%} of entities have connections. Well-connected graph.',
+                'details': {
+                    'connected_nodes': nodes_with_edges,
+                    'total_nodes': self.graph.number_of_nodes(),
+                    'connected_ratio': connected_ratio
+                }
+            }
+        
+        # If almost all nodes are connected, might be over-connected
+        return {
+            'score': 0.85,
+            'status': 'GOOD',
+            'message': f'{connected_ratio:.1%} connected. Very dense - verify connections are meaningful.',
+            'details': {
+                'connected_nodes': nodes_with_edges,
+                'total_nodes': self.graph.number_of_nodes(),
+                'connected_ratio': connected_ratio
+            }
+        }
+    
+    def _evaluate_structure_balance(self) -> Dict:
+        """
+        Evaluate the balance of different entity types.
+        Math papers should have a reasonable ratio of definitions to theorems to lemmas.
+        """
+        stats = {
+            'definitions': len(self.structure.definitions),
+            'theorems': len(self.structure.theorems),
+            'lemmas': len(self.structure.lemmas),
+            'propositions': len(self.structure.propositions),
+            'corollaries': len(self.structure.corollaries),
+            'assumptions': len(self.structure.assumptions),
+            'remarks': len(self.structure.remarks),
+        }
+        
+        total = sum(stats.values())
+        
+        if total == 0:
+            return {
+                'score': 0.0,
+                'status': 'CRITICAL',
+                'message': 'No entities of any type detected.',
+                'details': stats
+            }
+        
+        # Check for severe imbalances
+        has_definitions = stats['definitions'] > 0
+        has_theorems = stats['theorems'] > 0
+        
+        # Ideal math paper should have both definitions and theorems
+        if not has_definitions and not has_theorems:
+            # Only lemmas, remarks, etc. - might be a fragment
+            return {
+                'score': 0.4,
+                'status': 'FAIR',
+                'message': 'No definitions or theorems found. May be a partial extraction.',
+                'details': stats
+            }
+        
+        if not has_definitions:
+            return {
+                'score': 0.6,
+                'status': 'FAIR',
+                'message': 'No definitions found. Theorems may lack proper foundations.',
+                'details': stats
+            }
+        
+        if not has_theorems and stats['lemmas'] == 0:
+            return {
+                'score': 0.5,
+                'status': 'POOR',
+                'message': 'Only definitions found. No main results detected.',
+                'details': stats
+            }
+        
+        # Check ratio of theorems to definitions
+        if stats['definitions'] > 0:
+            theorem_def_ratio = (stats['theorems'] + stats['lemmas']) / stats['definitions']
+            
+            # Ideal ratio: 1-3 theorems/lemmas per definition
+            if 0.5 <= theorem_def_ratio <= 5:
+                return {
+                    'score': 0.95,
+                    'status': 'EXCELLENT',
+                    'message': f'Good balance: {stats["definitions"]} definitions, {stats["theorems"]} theorems, {stats["lemmas"]} lemmas.',
+                    'details': {**stats, 'theorem_def_ratio': round(theorem_def_ratio, 2)}
+                }
+            elif theorem_def_ratio < 0.5:
+                return {
+                    'score': 0.7,
+                    'status': 'FAIR',
+                    'message': f'More definitions than results. Consider if some definitions are unnecessary.',
+                    'details': {**stats, 'theorem_def_ratio': round(theorem_def_ratio, 2)}
+                }
+            else:
+                return {
+                    'score': 0.8,
+                    'status': 'GOOD',
+                    'message': f'Many results relative to definitions. May need intermediate lemmas.',
+                    'details': {**stats, 'theorem_def_ratio': round(theorem_def_ratio, 2)}
+                }
+        
+        return {
+            'score': 0.8,
+            'status': 'GOOD',
+            'message': f'Found {stats["theorems"]} theorems and {stats["lemmas"]} lemmas.',
+            'details': stats
+        }
+    
+    def _evaluate_completeness(self) -> Dict:
+        """
+        Evaluate completeness by checking for orphaned nodes and detecting gaps.
+        """
+        if self.graph.number_of_nodes() == 0:
+            return {
+                'score': 0.0,
+                'status': 'CRITICAL',
+                'message': 'Empty graph.',
+                'details': {}
+            }
+        
+        # Find truly isolated nodes (no in-edges, no out-edges)
+        isolated_nodes = [
+            node for node in self.graph.nodes()
+            if self.graph.in_degree(node) == 0 and self.graph.out_degree(node) == 0
+        ]
+        
+        isolated_ratio = len(isolated_nodes) / self.graph.number_of_nodes()
+        
+        # Find source nodes (only out-edges, no in-edges) - should be definitions/assumptions
+        source_nodes = [
+            node for node in self.graph.nodes()
+            if self.graph.in_degree(node) == 0 and self.graph.out_degree(node) > 0
+        ]
+        
+        # Find sink nodes (only in-edges, no out-edges) - should be theorems/corollaries
+        sink_nodes = [
+            node for node in self.graph.nodes()
+            if self.graph.in_degree(node) > 0 and self.graph.out_degree(node) == 0
+        ]
+        
+        if isolated_ratio > 0.5:
+            return {
+                'score': 0.3,
+                'status': 'POOR',
+                'message': f'{isolated_ratio:.1%} of nodes are isolated. Dependency extraction may have failed.',
+                'details': {
+                    'isolated_nodes': len(isolated_nodes),
+                    'isolated_ratio': isolated_ratio,
+                    'source_nodes': len(source_nodes),
+                    'sink_nodes': len(sink_nodes)
+                }
+            }
+        
+        if isolated_ratio > 0.2:
+            return {
+                'score': 0.6,
+                'status': 'FAIR',
+                'message': f'{isolated_ratio:.1%} isolated nodes. Some dependencies may be missing.',
+                'details': {
+                    'isolated_nodes': len(isolated_nodes),
+                    'isolated_ratio': isolated_ratio,
+                    'source_nodes': len(source_nodes),
+                    'sink_nodes': len(sink_nodes)
+                }
+            }
+        
+        if isolated_ratio <= 0.1:
+            return {
+                'score': 0.95,
+                'status': 'EXCELLENT',
+                'message': f'Only {isolated_ratio:.1%} isolated nodes. Good dependency coverage.',
+                'details': {
+                    'isolated_nodes': len(isolated_nodes),
+                    'isolated_ratio': isolated_ratio,
+                    'source_nodes': len(source_nodes),
+                    'sink_nodes': len(sink_nodes)
+                }
+            }
+        
+        return {
+            'score': 0.8,
+            'status': 'GOOD',
+            'message': f'{isolated_ratio:.1%} isolated nodes. Reasonable completeness.',
+            'details': {
+                'isolated_nodes': len(isolated_nodes),
+                'isolated_ratio': isolated_ratio,
+                'source_nodes': len(source_nodes),
+                'sink_nodes': len(sink_nodes)
+            }
+        }
+    
+    def _evaluate_density(self) -> Dict:
+        """
+        Evaluate graph density - not too sparse, not too dense.
+        """
+        n = self.graph.number_of_nodes()
+        
+        if n <= 1:
+            return {
+                'score': 0.0,
+                'status': 'CRITICAL',
+                'message': 'Insufficient nodes to evaluate density.',
+                'details': {'density': 0}
+            }
+        
+        density = nx.density(self.graph)
+        
+        # For directed graphs: 0 = no edges, 1 = complete graph
+        # Mathematical dependency graphs typically have density 0.05-0.3
+        
+        if density < 0.01:
+            return {
+                'score': 0.2,
+                'status': 'POOR',
+                'message': f'Density {density:.4f} is very low. Graph is too sparse.',
+                'details': {'density': density}
+            }
+        
+        if density < 0.05:
+            return {
+                'score': 0.6,
+                'status': 'FAIR',
+                'message': f'Density {density:.4f} is low. May have missed some dependencies.',
+                'details': {'density': density}
+            }
+        
+        if density <= 0.3:
+            return {
+                'score': 1.0,
+                'status': 'EXCELLENT',
+                'message': f'Density {density:.4f} is in ideal range.',
+                'details': {'density': density}
+            }
+        
+        if density <= 0.5:
+            return {
+                'score': 0.8,
+                'status': 'GOOD',
+                'message': f'Density {density:.4f} is slightly high. Verify connections are meaningful.',
+                'details': {'density': density}
+            }
+        
+        return {
+            'score': 0.5,
+            'status': 'FAIR',
+            'message': f'Density {density:.4f} is very high. May have false positive connections.',
+            'details': {'density': density}
+        }
+    
+    def _generate_recommendations(self, metrics: Dict) -> List[str]:
+        """Generate actionable recommendations based on metrics."""
+        recommendations = []
+        
+        # Coverage recommendations
+        if metrics['coverage']['score'] < 0.5:
+            recommendations.append("📄 **Entity Detection**: Consider using LaTeX source instead of PDF for better entity extraction.")
+        
+        # Connectivity recommendations
+        if metrics['connectivity']['score'] < 0.5:
+            recommendations.append("🔗 **Dependencies**: Many entities are isolated. Check if \\label and \\ref commands are properly parsed.")
+        
+        # Structure recommendations
+        if metrics['structure_balance']['score'] < 0.6:
+            rec = metrics['structure_balance'].get('details', {})
+            if rec.get('definitions', 0) == 0:
+                recommendations.append("📐 **Definitions**: No definitions found. Ensure \\begin{{definition}} environments are detected.")
+            if rec.get('theorems', 0) == 0 and rec.get('lemmas', 0) == 0:
+                recommendations.append("🎯 **Main Results**: No theorems or lemmas detected. Verify \\begin{{theorem}} parsing.")
+        
+        # Completeness recommendations
+        if metrics['completeness']['score'] < 0.5:
+            recommendations.append("🔍 **Completeness**: High number of isolated nodes. Some \\ref citations may not be resolving to \\label targets.")
+        
+        # Density recommendations
+        if metrics['density']['score'] < 0.5:
+            recommendations.append("📊 **Graph Density**: Graph is too sparse. Consider manual review for missed dependencies.")
+        elif metrics['density']['score'] > 0.8:
+            recommendations.append("⚠️ **Graph Density**: Graph is very dense. Verify that all connections are meaningful and not false positives.")
+        
+        if not recommendations:
+            recommendations.append("✅ **Overall**: Dependency graph quality is good. No major issues detected.")
+        
+        return recommendations
+    
+    def _score_to_grade(self, score: float) -> str:
+        """Convert numeric score to letter grade."""
+        if score >= 0.9:
+            return 'A'
+        if score >= 0.8:
+            return 'B'
+        if score >= 0.7:
+            return 'C'
+        if score >= 0.6:
+            return 'D'
+        return 'F'
+    
+    def export_quality_report(self, output_path: str = "quality_report.json"):
+        """Export quality evaluation to JSON file."""
+        evaluation = self.evaluate()
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(evaluation, f, indent=2, ensure_ascii=False)
+        print(f"Quality report saved to: {output_path}")
+    
+    def print_quality_summary(self):
+        """Print a formatted quality summary to console."""
+        result = self.evaluate()
+        
+        print("\n" + "="*60)
+        print("📊 DEPENDENCY GRAPH QUALITY EVALUATION")
+        print("="*60)
+        
+        print(f"\n🎯 OVERALL SCORE: {result['overall_score']}/1.0 (Grade: {result['grade']})")
+        
+        print("\n📈 DETAILED METRICS:")
+        print("-"*40)
+        for metric_name, metric_data in result['metrics'].items():
+            score_bar = "█" * int(metric_data['score'] * 10) + "░" * (10 - int(metric_data['score'] * 10))
+            print(f"  {metric_name.replace('_', ' ').title():20} [{score_bar}] {metric_data['score']:.2f}")
+            print(f"    Status: {metric_data['status']} - {metric_data['message']}")
+        
+        print("\n📋 STATISTICS:")
+        print("-"*40)
+        stats = result['statistics']
+        print(f"  Total Nodes: {stats['total_nodes']}")
+        print(f"  Total Edges: {stats['total_edges']}")
+        print(f"  Density: {stats['density']}")
+        print(f"  Connected: {'Yes' if stats['is_connected'] else 'No'} ({stats['num_components']} components)")
+        
+        print("\n💡 RECOMMENDATIONS:")
+        print("-"*40)
+        for rec in result['recommendations']:
+            print(f"  • {rec}")
+        
+        print("\n" + "="*60)
+
+
 class MathPaperAnalyzer:
     """Main class for analyzing math papers"""
     
@@ -1054,6 +1561,12 @@ class MathPaperAnalyzer:
         # Export interactive HTML (D3.js)
         html_path = os.path.join(output_dir, "dependency_graph.html")
         visualizer.export_html(html_path)
+        
+        # Quality evaluation
+        evaluator = GraphQualityEvaluator(structure)
+        quality_path = os.path.join(output_dir, "quality_report.json")
+        evaluator.export_quality_report(quality_path)
+        evaluator.print_quality_summary()
 
 
 def main():
