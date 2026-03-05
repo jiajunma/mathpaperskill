@@ -36,6 +36,8 @@ class TextSpan:
             return f"\\cite{{{','.join(keys)}}}"
         elif self.type == "ref":
             return f"\\ref{{{self.content}}}"
+        elif self.type == "eqref":
+            return f"\\eqref{{{self.content}}}"
         elif self.type == "label":
             return f"\\label{{{self.content}}}"
         elif self.type == "command":
@@ -45,7 +47,19 @@ class TextSpan:
         elif self.children:
             return "".join(child.to_latex() for child in self.children)
         else:
-            return self.content
+            # Escape special LaTeX characters
+            content = self.content
+            content = content.replace('\\', '\\textbackslash{}')
+            content = content.replace('{', '\\{')
+            content = content.replace('}', '\\}')
+            content = content.replace('$', '\\$')
+            content = content.replace('&', '\\&')
+            content = content.replace('%', '\\%')
+            content = content.replace('#', '\\#')
+            content = content.replace('_', '\\_')
+            content = content.replace('^', '\\^')
+            content = content.replace('~', '\\~{}')
+            return content
 
 
 @dataclass
@@ -57,7 +71,23 @@ class Proof:
     def to_latex(self) -> str:
         if self.raw_latex:
             return self.raw_latex
-        content = "".join(span.to_latex() for span in self.content)
+        
+        # Handle content - could be list of TextSpans or strings
+        if isinstance(self.content, list):
+            parts = []
+            for item in self.content:
+                if isinstance(item, TextSpan):
+                    parts.append(item.to_latex())
+                elif isinstance(item, str):
+                    parts.append(item)
+                else:
+                    parts.append(str(item))
+            content = "".join(parts)
+        elif isinstance(self.content, str):
+            content = self.content
+        else:
+            content = str(self.content)
+        
         return f"\\begin{{proof}}\n{content}\n\\end{{proof}}"
 
 
@@ -78,7 +108,22 @@ class MathElement:
         if self.raw_latex:
             return self.raw_latex
         
-        content = "".join(span.to_latex() for span in self.content)
+        # Handle content - could be list of TextSpans or strings
+        if isinstance(self.content, list):
+            content_parts = []
+            for item in self.content:
+                if isinstance(item, TextSpan):
+                    content_parts.append(item.to_latex())
+                elif isinstance(item, str):
+                    content_parts.append(item)
+                else:
+                    content_parts.append(str(item))
+            content = "".join(content_parts)
+        elif isinstance(self.content, str):
+            content = self.content
+        else:
+            content = str(self.content)
+        
         label_str = f"\\label{{{self.label}}}" if self.label else ""
         name_str = f"[{self.name}]" if self.name else ""
         
@@ -134,7 +179,22 @@ class Paragraph:
     def to_latex(self) -> str:
         if self.raw_latex:
             return self.raw_latex
-        return "".join(span.to_latex() for span in self.content)
+        
+        # Handle content - could be list of TextSpans or strings
+        if isinstance(self.content, list):
+            parts = []
+            for item in self.content:
+                if isinstance(item, TextSpan):
+                    parts.append(item.to_latex())
+                elif isinstance(item, str):
+                    parts.append(item)
+                else:
+                    parts.append(str(item))
+            return "".join(parts)
+        elif isinstance(self.content, str):
+            return self.content
+        else:
+            return str(self.content)
 
 
 @dataclass
@@ -214,19 +274,61 @@ class StructuredDocument:
     def to_latex(self) -> str:
         """Reconstruct complete LaTeX document"""
         parts = [
-            "\\documentclass{article}",
+            "\\documentclass[12pt]{article}",
             "% Preamble",
-            self.preamble,
+        ]
+        
+        # Add packages if known
+        if self.packages:
+            for pkg in self.packages:
+                pkg_name = pkg.get('name', '')
+                pkg_opts = pkg.get('options', '')
+                if pkg_opts:
+                    parts.append(f"\\usepackage[{pkg_opts}]{{{pkg_name}}}")
+                else:
+                    parts.append(f"\\usepackage{{{pkg_name}}}")
+        
+        # Add custom commands
+        if self.custom_commands:
+            parts.append("")
+            parts.append("% Custom commands")
+            for cmd in self.custom_commands:
+                parts.append(cmd)
+        
+        # Add remaining preamble
+        if self.preamble:
+            parts.append("")
+            parts.append("% Additional preamble")
+            # Filter out already-added packages
+            preamble_lines = self.preamble.split('\n')
+            for line in preamble_lines:
+                if 'usepackage' not in line and 'documentclass' not in line:
+                    parts.append(line)
+        
+        parts.extend([
             "",
             "\\begin{document}",
             "",
-            f"\\title{{{self.title}}}",
-            f"\\author{{{ ' \\and '.join(self.authors) }}}",
-            "\\maketitle",
-            "",
-            f"\\begin{{abstract}}\n{self.abstract}\n\\end{{abstract}}",
-            "",
-        ]
+        ])
+        
+        # Add title
+        if self.title:
+            parts.append(f"\\title{{{self.title}}}")
+        
+        # Add authors
+        if self.authors:
+            authors_str = ' \\and '.join(self.authors)
+            parts.append(f"\\author{{{authors_str}}}")
+        
+        parts.append("\\maketitle")
+        parts.append("")
+        
+        # Add abstract
+        if self.abstract:
+            parts.append(f"\\begin{{abstract}}")
+            parts.append(self.abstract)
+            parts.append(f"\\end{{abstract}}")
+            parts.append("")
         
         # Add sections
         for section in self.sections:
