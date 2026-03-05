@@ -97,8 +97,52 @@ class ArxivFetcher:
         return output_path
 
 
+    @classmethod
+    def fetch_and_extract_latex(cls, arxiv_id: str, output_dir: str = ".") -> str:
+        """Download source tarball and extract main LaTeX file"""
+        import tarfile
+        import glob
+        
+        arxiv_id = cls.extract_arxiv_id(arxiv_id)
+        source_url = cls.ARXIV_SOURCE_URL.format(arxiv_id)
+        tar_path = os.path.join(output_dir, f"{arxiv_id}_source.tar.gz")
+        extract_dir = os.path.join(output_dir, f"{arxiv_id}_source")
+        
+        # Download if not exists
+        if not os.path.exists(tar_path):
+            print(f"Downloading LaTeX source from {source_url}...")
+            urllib.request.urlretrieve(source_url, tar_path)
+            print(f"Saved to {tar_path}")
+        
+        # Extract
+        if not os.path.exists(extract_dir):
+            print(f"Extracting to {extract_dir}...")
+            os.makedirs(extract_dir, exist_ok=True)
+            with tarfile.open(tar_path, 'r:gz') as tar:
+                tar.extractall(extract_dir)
+        
+        # Find main .tex file
+        tex_files = glob.glob(os.path.join(extract_dir, "*.tex"))
+        if not tex_files:
+            raise FileNotFoundError(f"No .tex files found in {extract_dir}")
+        
+        # Prefer files that look like main documents
+        for tex_file in tex_files:
+            with open(tex_file, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                if '\\begin{document}' in content:
+                    print(f"Found main LaTeX file: {tex_file}")
+                    return tex_file
+        
+        # Fallback to first .tex file
+        print(f"Using LaTeX file: {tex_files[0]}")
+        return tex_files[0]
+
+
 class PDFExtractor:
     """Extract text from PDF files"""
+    
+    SILICONFLOW_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
     
     @staticmethod
     def extract_text(pdf_path: str) -> str:
@@ -111,6 +155,68 @@ class PDFExtractor:
         if result.returncode != 0:
             raise RuntimeError(f"pdftotext failed: {result.stderr}")
         return result.stdout
+    
+    @staticmethod
+    def extract_with_siliconflow(pdf_path: str, api_key: str) -> str:
+        """
+        Extract text from PDF using Silicon Flow's deepseek_OCR API.
+        Converts PDF to base64 and sends to API for OCR processing.
+        """
+        import base64
+        
+        print(f"Using Silicon Flow deepseek_OCR for {pdf_path}...")
+        
+        # Read PDF and encode as base64
+        with open(pdf_path, 'rb') as f:
+            pdf_bytes = f.read()
+        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+        
+        # Prepare API request
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": "deepseek-ai/deepseek-vl2",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Extract all text from this PDF. Preserve the mathematical notation and formatting as much as possible. Output only the extracted text without any additional commentary."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:application/pdf;base64,{pdf_base64}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            "max_tokens": 8192,
+            "temperature": 0.1
+        }
+        
+        try:
+            req = urllib.request.Request(
+                PDFExtractor.SILICONFLOW_API_URL,
+                data=json.dumps(data).encode('utf-8'),
+                headers=headers,
+                method='POST'
+            )
+            
+            with urllib.request.urlopen(req, timeout=300) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                extracted_text = result['choices'][0]['message']['content']
+                print(f"Successfully extracted {len(extracted_text)} characters")
+                return extracted_text
+                
+        except Exception as e:
+            print(f"Silicon Flow API error: {e}")
+            raise
     
     @staticmethod
     def extract_with_ocr(pdf_path: str) -> str:
@@ -215,12 +321,16 @@ class LatexParser:
             label_match = re.search(self.LABEL_PATTERN, match.group(0))
             label = label_match.group(1) if label_match else None
             
+            # Extract dependencies (refs) BEFORE cleaning
+            refs = re.findall(self.REF_PATTERN, match.group(0)) if match.group(0) else []
+            
             entity = MathEntity(
                 type=entity_type,
                 name=name,
                 label=label,
                 content=self._clean_latex(entity_content) if entity_content else "",
-                line_number=match.start()
+                line_number=match.start(),
+                dependencies=refs
             )
             
             self.structure.entities.append(entity)
@@ -241,18 +351,18 @@ class LatexParser:
     
     def _build_dependencies(self):
         """Build dependency graph based on \ref citations"""
+        # Build a map of label to entity
+        label_to_entity = {}
         for entity in self.structure.entities:
-            # Find all \ref commands in the entity content
-            refs = re.findall(self.REF_PATTERN, entity.content)
-            entity.dependencies = refs
-            
-            # Update cited_by for referenced entities
-            for ref in refs:
-                for other in self.structure.entities:
-                    if other.label == ref:
-                        if entity.label not in other.cited_by:
-                            other.cited_by.append(entity.label)
-                        break
+            if entity.label:
+                label_to_entity[entity.label] = entity
+        
+        # Update cited_by for referenced entities
+        for entity in self.structure.entities:
+            for ref in entity.dependencies:
+                if ref in label_to_entity:
+                    if entity.label and entity.label not in label_to_entity[ref].cited_by:
+                        label_to_entity[ref].cited_by.append(entity.label)
     
     def _clean_latex(self, text: str) -> str:
         """Clean LaTeX formatting from text"""
@@ -1505,58 +1615,62 @@ class LLMReviewer:
     
     def generate_review(self, structure: PaperStructure, full_text: str = "") -> Dict:
         """
-        Generate comprehensive peer review in Chinese.
+        Generate comprehensive peer review in English.
         Returns structured review data.
         """
-        print("\n🤖 Generating AI peer review (this may take a minute)...")
+        print("\n🤖 Generating AI peer review in English (this may take a minute)...")
         
         # Prepare paper summary for the prompt - limit entities
         entities_summary = []
         for e in structure.entities[:10]:  # Limit to first 10 entities
             entities_summary.append(f"{e.type.upper()}: {e.name}")
         
-        prompt = f"""你是一位资深的数学论文审稿人。请对以下数学论文进行详细的同行评议。审稿意见必须用中文撰写。
+        prompt = f"""You are a senior mathematician and peer reviewer. Please provide a detailed peer review of the following mathematical paper. The review must be written in English.
 
-论文信息：
-- 标题：{structure.title or '未提取到标题'}
-- 作者：{', '.join(structure.authors) if structure.authors else '未知'}
-- 摘要：{structure.abstract[:300] if structure.abstract else '未提取到摘要'}...
+Paper Information:
+- Title: {structure.title or 'Title not extracted'}
+- Authors: {', '.join(structure.authors) if structure.authors else 'Unknown'}
+- Abstract: {structure.abstract[:300] if structure.abstract else 'Abstract not extracted'}...
 
-提取到的主要数学实体：
+Main Mathematical Entities Extracted:
 {chr(10).join(entities_summary)}
 
-论文统计：
-- 定义数量：{len(structure.definitions)}
-- 定理数量：{len(structure.theorems)}
-- 引理数量：{len(structure.lemmas)}
-- 命题数量：{len(structure.propositions)}
-- 推论数量：{len(structure.corollaries)}
+Paper Statistics:
+- Number of Definitions: {len(structure.definitions)}
+- Number of Theorems: {len(structure.theorems)}
+- Number of Lemmas: {len(structure.lemmas)}
+- Number of Propositions: {len(structure.propositions)}
+- Number of Corollaries: {len(structure.corollaries)}
 
-请按照以下结构提供详细的审稿意见：
+Please provide a detailed peer review following this structure:
 
-## 1. 论文概述与主要贡献
-简述文章的主要研究内容和核心定理，评价论文的创新点和学术价值。
+## 1. Summary and Main Contributions
+Briefly describe the main research content and core theorems, evaluate the paper's innovation and academic value.
 
-## 2. 主要证明方法分析
-分析论文使用的主要数学技巧和方法，评价证明思路的清晰度和巧妙性。
+## 2. Analysis of Main Proof Methods
+Analyze the main mathematical techniques and methods used, evaluate the clarity and ingenuity of the proof ideas.
 
-## 3. 具体错误与问题
-### 3.1 语法和表述错误
-数学符号使用不当、语言表达不清晰之处。
+## 3. Specific Errors and Issues
+### 3.1 Grammar and Presentation Errors
+Improper use of mathematical symbols, unclear language expression.
 
-### 3.2 逻辑错误与漏洞
-论证过程中的逻辑断层、隐含假设未明确说明的地方。
+### 3.2 Logical Errors and Gaps
+Logical disconnections in the argumentation process, implicit assumptions not clearly stated.
 
-### 3.3 证明中的跳步
-需要补充详细论证的步骤、过于简略的证明片段。
+### 3.3 Steps Missing in Proofs
+Steps that need detailed argumentation, overly brief proof fragments.
 
-## 4. 引用与文献问题
-引用他人结论时表述含糊之处、重要参考文献的缺失。
+## 4. Citation and Bibliography Issues
+Ambiguous references to others' conclusions, missing important references.
 
-## 5. 改进建议
-结构组织、内容补充、写作风格方面的建议。
+## 5. Suggestions for Improvement
+Suggestions on structure organization, content supplementation, and writing style.
 
-请确保审稿意见具体且有针对性，避免空泛的评价。语气专业、客观、建设性。
+Please ensure the review is:
+1. Specific and targeted, avoiding vague evaluations
+2. Provides clear context for any issues found
+3. Offers actionable suggestions
+4. Maintains a professional, objective, and constructive tone
 """
         
         # First call with cheaper model (Kimi)
@@ -1564,7 +1678,7 @@ class LLMReviewer:
             review_text = self._call_llm(prompt, max_tokens=4000, model="kimi")
         except Exception as e:
             print(f"Kimi review failed: {e}")
-            review_text = "审稿生成失败。请检查API密钥配置。"
+            review_text = "Review generation failed. Please check API key configuration."
         
         # Parse the review into structured format
         return self._parse_review(review_text)
@@ -1576,17 +1690,17 @@ class LLMReviewer:
             'sections': {}
         }
         
-        # Try to extract sections
+        # Try to extract sections (English patterns)
         sections_patterns = [
-            ("overview", r"## 1[.\s]+论文概述与主要贡献(.*?)## 2"),
-            ("methods", r"## 2[.\s]+主要证明方法分析(.*?)## 3"),
-            ("errors", r"## 3[.\s]+具体错误与问题(.*?)## 4"),
-            ("citations", r"## 4[.\s]+引用与文献问题(.*?)## 5"),
-            ("suggestions", r"## 5[.\s]+改进建议(.*?)$"),
+            ("overview", r"## 1[.\s]+Summary and Main Contributions(.*?)## 2"),
+            ("methods", r"## 2[.\s]+Analysis of Main Proof Methods(.*?)## 3"),
+            ("errors", r"## 3[.\s]+Specific Errors and Issues(.*?)## 4"),
+            ("citations", r"## 4[.\s]+Citation and Bibliography Issues(.*?)## 5"),
+            ("suggestions", r"## 5[.\s]+Suggestions for Improvement(.*?)$"),
         ]
         
         for section_name, pattern in sections_patterns:
-            match = re.search(pattern, review_text, re.DOTALL)
+            match = re.search(pattern, review_text, re.DOTALL | re.IGNORECASE)
             if match:
                 review['sections'][section_name] = match.group(1).strip()
         
@@ -1595,21 +1709,21 @@ class LLMReviewer:
     def export_review(self, review: Dict, output_path: str = "peer_review.md"):
         """Export peer review to Markdown file"""
         with open(output_path, 'w', encoding='utf-8') as f:
-            f.write("# 数学论文同行评议报告\n\n")
+            f.write("# Mathematical Paper Peer Review Report\n\n")
             f.write(review['raw_text'])
         print(f"Peer review saved to: {output_path}")
     
     def print_review_summary(self, review: Dict):
         """Print review summary to console"""
         print("\n" + "="*60)
-        print("📝 AI PEER REVIEW (中文)")
+        print("📝 AI PEER REVIEW (English)")
         print("="*60)
         
         # Print first 1000 chars as preview
         preview = review['raw_text'][:1000]
         print(preview)
         if len(review['raw_text']) > 1000:
-            print(f"\n... (完整报告已保存，共 {len(review['raw_text'])} 字符)")
+            print(f"\n... (Full report saved, total {len(review['raw_text'])} characters)")
         
         print("\n" + "="*60)
 
@@ -1622,19 +1736,30 @@ class MathPaperAnalyzer:
         self.text_analyzer = TextAnalyzer()
         self.pdf_extractor = PDFExtractor()
     
-    def analyze(self, input_path: str, output_dir: str = ".") -> PaperStructure:
+    def analyze(self, input_path: str, output_dir: str = ".", use_latex_source: bool = True) -> PaperStructure:
         """
         Analyze a math paper from various input formats.
         
         Args:
             input_path: Path to PDF, .tex file, or arXiv ID/URL
             output_dir: Directory for output files
+            use_latex_source: For arXiv papers, prefer LaTeX source over PDF
         """
         input_path = input_path.strip()
         
         # Check if arXiv link/ID
         if 'arxiv' in input_path.lower() or re.match(r'^\d{4}\.\d+', input_path):
             print(f"Fetching from arXiv: {input_path}")
+            
+            if use_latex_source:
+                try:
+                    print("Attempting to download LaTeX source...")
+                    tex_path = ArxivFetcher.fetch_and_extract_latex(input_path, output_dir)
+                    return self.analyze_latex(tex_path, output_dir)
+                except Exception as e:
+                    print(f"LaTeX source download failed: {e}")
+                    print("Falling back to PDF...")
+            
             pdf_path = ArxivFetcher.fetch_pdf(input_path, output_dir)
             return self.analyze_pdf(pdf_path, output_dir)
         
@@ -1652,11 +1777,35 @@ class MathPaperAnalyzer:
         """Analyze PDF file"""
         print(f"Extracting text from PDF: {pdf_path}")
         
-        try:
-            text = self.pdf_extractor.extract_text(pdf_path)
-        except Exception as e:
-            print(f"Native extraction failed, trying OCR: {e}")
-            text = self.pdf_extractor.extract_with_ocr(pdf_path)
+        # Try Silicon Flow API first if key is available
+        siliconflow_key = None
+        key_paths = [
+            os.path.expanduser("~/.openclaw/workspace/mycode/siliconflow_key"),
+            os.path.expanduser("~/mycode/siliconflow_key"),
+            "./siliconflow_key",
+        ]
+        for path in key_paths:
+            if os.path.exists(path):
+                with open(path, 'r') as f:
+                    siliconflow_key = f.read().strip()
+                break
+        
+        text = ""
+        if siliconflow_key:
+            try:
+                print("Attempting to use Silicon Flow deepseek_OCR...")
+                text = self.pdf_extractor.extract_with_siliconflow(pdf_path, siliconflow_key)
+                print(f"Silicon Flow extraction successful: {len(text)} characters")
+            except Exception as e:
+                print(f"Silicon Flow failed: {e}")
+        
+        # Fallback to native extraction if Silicon Flow failed or not available
+        if not text:
+            try:
+                text = self.pdf_extractor.extract_text(pdf_path)
+            except Exception as e:
+                print(f"Native extraction failed, trying OCR: {e}")
+                text = self.pdf_extractor.extract_with_ocr(pdf_path)
         
         # Check if text looks like LaTeX source
         if '\\begin{document}' in text or '\\section{' in text:
@@ -1823,13 +1972,15 @@ def main():
     parser.add_argument("input", help="PDF file, LaTeX file, or arXiv ID/URL")
     parser.add_argument("-o", "--output", default="./output", help="Output directory")
     parser.add_argument("--no-graph", action="store_true", help="Skip dependency graph generation")
+    parser.add_argument("--no-latex-source", action="store_true", help="For arXiv papers, use PDF instead of LaTeX source")
     
     args = parser.parse_args()
     
     analyzer = MathPaperAnalyzer()
     
     try:
-        structure = analyzer.analyze(args.input, args.output)
+        use_latex = not args.no_latex_source
+        structure = analyzer.analyze(args.input, args.output, use_latex_source=use_latex)
         analyzer.generate_report(structure, args.output)
         print("\nAnalysis complete!")
     except Exception as e:
