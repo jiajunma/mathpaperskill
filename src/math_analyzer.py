@@ -1772,13 +1772,31 @@ Based on the dependency analysis:
 - Are the references appropriate and current?
 - Is the relationship to prior work clear?
 
-## 6. RECOMMENDATION
-Provide a specific recommendation:
-- ACCEPT (minor revisions)
-- MAJOR REVISION needed (specify what)
-- REJECT (explain why)
+## 6. SPECIFIC RECOMMENDATIONS WITH LOCATIONS
+**CRITICAL: For each issue, specify EXACTLY where and how to fix it:**
 
-**IMPORTANT:** Be specific. Quote theorem numbers. Point to exact locations. Do not write generic comments like "the paper needs more explanation" without saying WHERE and WHAT needs explanation.
+Example format:
+- **Issue**: [Description of problem]
+- **Location**: Theorem 3, line 2, after "...converges"
+- **Action**: Add a reference to Lemma 2.1 to justify the convergence claim
+- **Priority**: Critical / Major / Minor
+
+List at least 5 specific actionable items with exact locations.
+
+## 7. FINAL RECOMMENDATION
+**Choose ONE and explain WHY:**
+- **ACCEPT** - The paper is ready for publication with no or only typographical corrections
+- **ACCEPT WITH MINOR REVISIONS** - The paper is sound but needs small clarifications (list them)
+- **MAJOR REVISION REQUIRED** - The paper has significant issues that must be addressed before reconsideration (list the 3-5 most critical issues)
+- **REJECT** - The paper has fundamental flaws that cannot be fixed by revision
+
+**IMPORTANT RULES:**
+1. NEVER write generic statements like "the paper needs more explanation" without saying WHERE
+2. ALWAYS cite specific theorem/definition numbers
+3. For EVERY criticism, provide a concrete suggestion for how to fix it
+4. Use the format: "In [Theorem/Lemma/Definition] X, [issue]. Suggested fix: [action]"
+5. Quote specific text from the paper when criticizing it
+6. Prioritize issues: Critical (blocks publication) > Major (significant flaw) > Minor (cosmetic)
 """
         
         # Call with larger token limit for deep analysis
