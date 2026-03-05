@@ -24,10 +24,12 @@ import matplotlib.pyplot as plt
 @dataclass
 class MathEntity:
     """Represents a mathematical entity (definition, theorem, lemma, etc.)"""
-    type: str  # definition, theorem, lemma, proposition, corollary, assumption, remark
+    type: str  # definition, theorem, lemma, proposition, corollary, assumption, remark, equation
     name: str
+    short_name: str = ""  # Human-readable name extracted from content
     label: Optional[str] = None
     content: str = ""
+    display_content: str = ""  # Shortened content for display
     section: str = ""
     dependencies: List[str] = field(default_factory=list)
     line_number: int = 0
@@ -49,6 +51,7 @@ class PaperStructure:
     corollaries: Dict[str, MathEntity] = field(default_factory=dict)
     assumptions: Dict[str, MathEntity] = field(default_factory=dict)
     remarks: Dict[str, MathEntity] = field(default_factory=dict)
+    equations: Dict[str, MathEntity] = field(default_factory=dict)
 
 
 class ArxivFetcher:
@@ -256,6 +259,8 @@ class LatexParser:
         'corollary': r'\\begin\{corollary\}(?:\[(.*?)\])?(.*?)\\end\{corollary\}',
         'assumption': r'\\begin\{assumption\}(?:\[(.*?)\])?(.*?)\\end\{assumption\}',
         'remark': r'\\begin\{remark\}(?:\[(.*?)\])?(.*?)\\end\{remark\}',
+        'equation': r'\\begin\{equation\}(?:\*)?(.*?)\\end\{equation\}(?:\*)?',
+        'equation_star': r'\\begin\{equation\*\}(.*?)\\end\{equation\*}',
     }
     
     LABEL_PATTERN = r'\\label\{(.*?)\}'
@@ -307,6 +312,37 @@ class LatexParser:
         sections = re.findall(r'\\section\{(.*?)\}', content)
         self.structure.sections = sections
     
+    def _generate_short_name(self, entity_type: str, content: str, index: int) -> str:
+        """Generate a meaningful short name from entity content."""
+        content = content.strip()
+        
+        if entity_type == 'equation':
+            # Extract the equation itself (first 50 chars)
+            eq = content.replace('\n', ' ').strip()
+            if len(eq) > 50:
+                eq = eq[:47] + "..."
+            return f"Eq {index}: {eq}"
+        
+        # For theorems/definitions, try to extract key statement
+        lines = content.split('\n')
+        first_line = lines[0].strip() if lines else ""
+        
+        # Remove LaTeX commands
+        clean = re.sub(r'\\[a-zA-Z]+\*?(?:\{[^}]*\})?(?:\[[^\]]*\])?', '', first_line)
+        clean = re.sub(r'[\{\}\$\\]', '', clean).strip()
+        
+        # Extract first sentence (up to first period)
+        if '.' in clean:
+            clean = clean.split('.')[0] + '.'
+        
+        # Limit length
+        if len(clean) > 60:
+            clean = clean[:57] + "..."
+        
+        if clean:
+            return f"{entity_type.capitalize()} {index}: {clean}"
+        return f"{entity_type.capitalize()} {index}"
+    
     def _extract_entities(self, content: str, entity_type: str, pattern: str):
         """Extract mathematical entities"""
         matches = list(re.finditer(pattern, content, re.DOTALL))
@@ -314,8 +350,13 @@ class LatexParser:
         for i, match in enumerate(matches):
             self.entity_counter[entity_type] += 1
             
-            name = match.group(1) if match.group(1) else f"{entity_type.capitalize()} {self.entity_counter[entity_type]}"
-            entity_content = match.group(2) if len(match.groups()) > 1 else match.group(1)
+            # Handle optional name in brackets for non-equation types
+            if entity_type == 'equation':
+                name = f"Equation {self.entity_counter[entity_type]}"
+                entity_content = match.group(1) if match.group(1) else ""
+            else:
+                name = match.group(1) if match.group(1) else f"{entity_type.capitalize()} {self.entity_counter[entity_type]}"
+                entity_content = match.group(2) if len(match.groups()) > 1 and match.group(2) else match.group(1)
             
             # Extract label
             label_match = re.search(self.LABEL_PATTERN, match.group(0))
@@ -324,11 +365,21 @@ class LatexParser:
             # Extract dependencies (refs) BEFORE cleaning
             refs = re.findall(self.REF_PATTERN, match.group(0)) if match.group(0) else []
             
+            # Generate short name
+            short_name = self._generate_short_name(entity_type, entity_content or "", self.entity_counter[entity_type])
+            
+            # Create display content (truncated)
+            display_content = self._clean_latex(entity_content) if entity_content else ""
+            if len(display_content) > 200:
+                display_content = display_content[:197] + "..."
+            
             entity = MathEntity(
                 type=entity_type,
                 name=name,
+                short_name=short_name,
                 label=label,
                 content=self._clean_latex(entity_content) if entity_content else "",
+                display_content=display_content,
                 line_number=match.start(),
                 dependencies=refs
             )
@@ -344,6 +395,8 @@ class LatexParser:
                 'corollary': self.structure.corollaries,
                 'assumption': self.structure.assumptions,
                 'remark': self.structure.remarks,
+                'equation': self.structure.equations,
+                'equation_star': self.structure.equations,
             }
             
             key = label if label else f"{entity_type}_{self.entity_counter[entity_type]}"
@@ -473,7 +526,8 @@ class DependencyGraphVisualizer:
                 node_id,
                 type=entity.type,
                 name=entity.name,
-                content=entity.content[:100] + "..." if len(entity.content) > 100 else entity.content
+                short_name=entity.short_name,
+                content=entity.display_content or (entity.content[:150] + "..." if len(entity.content) > 150 else entity.content)
             )
         
         # Add edges (dependencies)
@@ -494,7 +548,7 @@ class DependencyGraphVisualizer:
             print("No entities to visualize")
             return
         
-        plt.figure(figsize=(14, 10))
+        plt.figure(figsize=(16, 12))
         
         # Color nodes by type
         type_colors = {
@@ -505,6 +559,8 @@ class DependencyGraphVisualizer:
             'corollary': '#E91E63',
             'assumption': '#F44336',
             'remark': '#607D8B',
+            'equation': '#795548',
+            'equation_star': '#795548',
         }
         
         node_colors = [
@@ -513,17 +569,17 @@ class DependencyGraphVisualizer:
         ]
         
         # Layout
-        pos = nx.spring_layout(self.graph, k=2, iterations=50)
+        pos = nx.spring_layout(self.graph, k=2.5, iterations=50)
         
         # Draw
-        nx.draw_networkx_nodes(self.graph, pos, node_color=node_colors, node_size=1500, alpha=0.9)
+        nx.draw_networkx_nodes(self.graph, pos, node_color=node_colors, node_size=2000, alpha=0.9)
         nx.draw_networkx_edges(self.graph, pos, edge_color='#666666', arrows=True, 
                                arrowsize=20, arrowstyle='->', width=1.5, alpha=0.6)
         
-        # Labels
-        labels = {n: self._truncate_label(self.graph.nodes[n].get('name', n))
+        # Labels - use short_name for better readability
+        labels = {n: self._truncate_label(self.graph.nodes[n].get('short_name', self.graph.nodes[n].get('name', n)), max_len=30)
                   for n in self.graph.nodes()}
-        nx.draw_networkx_labels(self.graph, pos, labels, font_size=8, font_weight='bold')
+        nx.draw_networkx_labels(self.graph, pos, labels, font_size=7, font_weight='bold')
         
         plt.title("Mathematical Dependencies", fontsize=16, fontweight='bold')
         plt.axis('off')
@@ -1615,67 +1671,119 @@ class LLMReviewer:
     
     def generate_review(self, structure: PaperStructure, full_text: str = "") -> Dict:
         """
-        Generate comprehensive peer review in English.
+        Generate comprehensive peer review with deep mathematical analysis.
         Returns structured review data.
         """
-        print("\n🤖 Generating AI peer review in English (this may take a minute)...")
+        print("\n🤖 Generating in-depth peer review (this may take 2-3 minutes)...")
         
-        # Prepare paper summary for the prompt - limit entities
-        entities_summary = []
-        for e in structure.entities[:10]:  # Limit to first 10 entities
-            entities_summary.append(f"{e.type.upper()}: {e.name}")
+        # Build detailed theorem/definition list with content
+        theorems_detail = []
+        for i, (key, thm) in enumerate(structure.theorems.items(), 1):
+            deps = ", ".join(thm.dependencies) if thm.dependencies else "None"
+            cited = ", ".join(thm.cited_by) if thm.cited_by else "None"
+            content = thm.content[:500] + "..." if len(thm.content) > 500 else thm.content
+            theorems_detail.append(
+                f"THEOREM {i} (Label: {thm.label or 'N/A'}):\n"
+                f"Statement: {content}\n"
+                f"Depends on: {deps}\n"
+                f"Cited by: {cited}\n"
+            )
         
-        prompt = f"""You are a senior mathematician and peer reviewer. Please provide a detailed peer review of the following mathematical paper. The review must be written in English.
+        definitions_detail = []
+        for i, (key, df) in enumerate(structure.definitions.items(), 1):
+            content = df.content[:400] + "..." if len(df.content) > 400 else df.content
+            definitions_detail.append(
+                f"DEFINITION {i} (Label: {df.label or 'N/A'}):\n"
+                f"Definition: {content}\n"
+            )
+        
+        # Analyze dependency structure
+        isolated_entities = [e.name for e in structure.entities if not e.dependencies and not e.cited_by]
+        well_connected = [e.name for e in structure.entities if e.dependencies and e.cited_by]
+        
+        prompt = f"""You are a senior mathematician and expert peer reviewer. Analyze this mathematical paper IN DEPTH and provide specific, actionable feedback. The review must be written in English.
 
-Paper Information:
-- Title: {structure.title or 'Title not extracted'}
-- Authors: {', '.join(structure.authors) if structure.authors else 'Unknown'}
-- Abstract: {structure.abstract[:300] if structure.abstract else 'Abstract not extracted'}...
+# PAPER INFORMATION
+**Title:** {structure.title or 'Title not extracted'}
+**Authors:** {', '.join(structure.authors) if structure.authors else 'Unknown'}
+**Abstract:** {structure.abstract}
 
-Main Mathematical Entities Extracted:
-{chr(10).join(entities_summary)}
+# STATISTICS
+- {len(structure.definitions)} Definitions
+- {len(structure.theorems)} Theorems  
+- {len(structure.lemmas)} Lemmas
+- {len(structure.propositions)} Propositions
+- {len(structure.corollaries)} Corollaries
+- {len(structure.equations)} Equations
 
-Paper Statistics:
-- Number of Definitions: {len(structure.definitions)}
-- Number of Theorems: {len(structure.theorems)}
-- Number of Lemmas: {len(structure.lemmas)}
-- Number of Propositions: {len(structure.propositions)}
-- Number of Corollaries: {len(structure.corollaries)}
+# KEY DEFINITIONS
+{chr(10).join(definitions_detail[:8]) if definitions_detail else "No definitions extracted"}
 
-Please provide a detailed peer review following this structure:
+# MAIN THEOREMS WITH CONTENT
+{chr(10).join(theorems_detail[:6]) if theorems_detail else "No theorems extracted"}
 
-## 1. Summary and Main Contributions
-Briefly describe the main research content and core theorems, evaluate the paper's innovation and academic value.
+# DEPENDENCY ANALYSIS
+- Isolated entities (no refs in or out): {len(isolated_entities)}
+- Well-connected entities: {len(well_connected)}
 
-## 2. Analysis of Main Proof Methods
-Analyze the main mathematical techniques and methods used, evaluate the clarity and ingenuity of the proof ideas.
+---
 
-## 3. Specific Errors and Issues
-### 3.1 Grammar and Presentation Errors
-Improper use of mathematical symbols, unclear language expression.
+Now provide a DETAILED peer review with the following structure:
 
-### 3.2 Logical Errors and Gaps
-Logical disconnections in the argumentation process, implicit assumptions not clearly stated.
+## 1. MATHEMATICAL CONTRIBUTION AND NOVELTY
+**Analyze the actual mathematical content:**
+- What specific mathematical problem does this paper address?
+- What are the main results? State them in your own words.
+- How novel are these results? Compare to standard results in the field.
+- Is the problem well-motivated? Why should readers care?
 
-### 3.3 Steps Missing in Proofs
-Steps that need detailed argumentation, overly brief proof fragments.
+## 2. TECHNICAL ANALYSIS OF PROOFS
+**Examine the proof techniques:**
+- What are the key proof techniques used?
+- Are the proofs complete? Identify any gaps or missing steps.
+- Does each theorem follow logically from previous results?
+- Are there any circular dependencies?
 
-## 4. Citation and Bibliography Issues
-Ambiguous references to others' conclusions, missing important references.
+## 3. SPECIFIC ISSUES (CRITICAL)
+### 3.1 Mathematical Errors or Imprecisions
+- Point out ANY mathematical errors, even minor ones
+- Identify imprecise statements or undefined terms
+- Check if hypotheses are clearly stated for each theorem
 
-## 5. Suggestions for Improvement
-Suggestions on structure organization, content supplementation, and writing style.
+### 3.2 Proof Gaps
+For each main theorem, indicate:
+- Which steps are explicitly written
+- Which steps are left to the reader
+- Whether the omissions are reasonable
 
-Please ensure the review is:
-1. Specific and targeted, avoiding vague evaluations
-2. Provides clear context for any issues found
-3. Offers actionable suggestions
-4. Maintains a professional, objective, and constructive tone
+### 3.3 Dependency Problems
+Based on the dependency analysis:
+- Are there theorems that don't build on previous results?
+- Are definitions used before they're introduced?
+- Is the logical flow clear?
+
+## 4. NOTATION AND PRESENTATION
+- Is notation consistent throughout?
+- Are there overloaded symbols?
+- Is the LaTeX quality acceptable?
+
+## 5. LITERATURE AND CONTEXT
+- Does the paper adequately cite related work?
+- Are the references appropriate and current?
+- Is the relationship to prior work clear?
+
+## 6. RECOMMENDATION
+Provide a specific recommendation:
+- ACCEPT (minor revisions)
+- MAJOR REVISION needed (specify what)
+- REJECT (explain why)
+
+**IMPORTANT:** Be specific. Quote theorem numbers. Point to exact locations. Do not write generic comments like "the paper needs more explanation" without saying WHERE and WHAT needs explanation.
 """
         
-        # First call with cheaper model (Kimi)
+        # Call with larger token limit for deep analysis
         try:
-            review_text = self._call_llm(prompt, max_tokens=4000, model="kimi")
+            review_text = self._call_llm(prompt, max_tokens=6000, model="kimi")
         except Exception as e:
             print(f"Kimi review failed: {e}")
             review_text = "Review generation failed. Please check API key configuration."
