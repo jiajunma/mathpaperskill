@@ -208,6 +208,8 @@ class Section:
     subsections: List['Section'] = field(default_factory=list)
     elements: List[Union[Theorem, Definition, Equation]] = field(default_factory=list)
     raw_latex: str = ""
+    raw_content: str = ""  # Original content for accurate reconstruction
+    level: int = 1
     
     def to_latex(self) -> str:
         if self.raw_latex:
@@ -530,12 +532,14 @@ class StructuredParser:
         
         return sections
     
-    def _parse_section_content(self, sec_type: str, title: str, label: str, content: str) -> Section:
+    def _parse_section_content(self, sec_type: str, title: str, label: str, content: str, level: int = 1) -> Section:
         """Parse content within a section"""
         section = Section(
             type=sec_type,
             title=self._clean_latex(title),
             label=label,
+            level=level,
+            raw_content=content,
             raw_latex=f"\\{sec_type}{{{title}}}{'\\\\label{' + label + '}' if label else ''}"
         )
         
@@ -580,6 +584,8 @@ class StructuredParser:
                     eq = Equation(
                         number=self.counters["equation"],
                         label=label,
+            level=level,
+            raw_content=content,
                         content=re.sub(r'\\label\{.*?\}', '', eq_content).strip(),
                         is_numbered=(env_type == "equation"),
                         raw_latex=match.group(0)
@@ -610,6 +616,8 @@ class StructuredParser:
                         type=env_type,
                         number=self.counters[env_type],
                         label=label,
+            level=level,
+            raw_content=content,
                         name=name,
                         content=self._parse_text_spans(body),
                         raw_latex=match.group(0)
