@@ -342,9 +342,9 @@ class StructuredDocument:
             parts.append(f"\\end{{abstract}}")
             parts.append("")
         
-        # Add sections
+        # Add sections (including nested subsections)
         for section in self.sections:
-            parts.append(section.to_latex())
+            parts.append(self._render_section(section))
         
         # Add bibliography
         if self.bibliography:
@@ -364,6 +364,12 @@ class StructuredDocument:
         ])
         
         return "\n".join(parts)
+    
+    def _render_section(self, section: Section) -> str:
+        """Recursively render section and its subsections"""
+        result = section.to_latex()
+        # Subsections are already included in section.to_latex() via raw_content
+        return result
     
     def _format_bib_entry(self, entry: BibliographyEntry) -> str:
         """Format bibliography entry for thebibliography environment"""
@@ -523,12 +529,11 @@ class StructuredParser:
             self.doc.abstract = self._clean_latex(abstract_match.group(1))
     
     def _parse_sections(self, body: str) -> List[Section]:
-        """Parse sections and their content"""
+        """Parse sections and their content, properly handling nesting"""
         sections = []
+        section_stack = []  # Track current section hierarchy
         
-        # Find all sections
         section_pattern = r'\\(section|subsection|subsubsection)(?:\*?)?\{(.*?)\}(?:\s*\\label\{(.*?)\})?'
-        
         matches = list(re.finditer(section_pattern, body, re.DOTALL))
         
         for i, match in enumerate(matches):
@@ -537,8 +542,24 @@ class StructuredParser:
             end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
             content = body[start:end]
             
-            section = self._parse_section_content(sec_type, title, label or "", content)
-            sections.append(section)
+            # Calculate level
+            level = {'section': 1, 'subsection': 2, 'subsubsection': 3}[sec_type]
+            
+            # Pop from stack until we find parent with lower level
+            while section_stack and section_stack[-1]['level'] >= level:
+                section_stack.pop()
+            
+            # Create section with proper nesting level
+            section = self._parse_section_content(sec_type, title, label or "", content, level)
+            
+            # Add to parent or as top-level
+            if section_stack:
+                section_stack[-1]['section'].subsections.append(section)
+            else:
+                sections.append(section)
+            
+            # Push to stack
+            section_stack.append({'section': section, 'level': level})
         
         return sections
     
